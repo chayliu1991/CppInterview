@@ -41,3 +41,9 @@
 - 声明式编程
 - 在需要的时间和地点实现闭包
 
+# std::tuple
+
+- std::tuple 简介
+- 创建 std::tuple
+- 获取 std::tuple 的值
+- 连接两个 std::tuple
