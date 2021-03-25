@@ -34,3 +34,10 @@
 - 可调用对象包装器 std::function
 - std::bind 绑定器
 
+# lambda 表达式
+
+- lambda 表达式
+- lambda 表达式基本概念与用法
+- 声明式编程
+- 在需要的时间和地点实现闭包
+
