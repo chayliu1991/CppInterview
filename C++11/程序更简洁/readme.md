@@ -30,3 +30,7 @@
 
 # std::function 与 bind 绑定器
 
+- 可调用对象
+- 可调用对象包装器 std::function
+- std::bind 绑定器
+
