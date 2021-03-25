@@ -292,6 +292,20 @@ int count3 = std::count_if(vec.begin(), vec.end(), std::bind(std::less<int>(), 5
 int count4 = std::count_if(vec.begin(), vec.end(), std::bind(std::less<int>(), std::placeholders::_1,5)); //@ 第二个参数固定为5，查找小于 5 的元素个数
 ```
 
+## 组合使用 std::bind
+
+复合多个函数(闭包)
+
+```
+using std::placeholders::_1;
+
+std::vector<int> vec{ 1,2,3,4,5,6,7,8,9,10 };
+auto f = std::bind(std::logical_and<bool>(),	 //@ 逻辑与
+	std::bind(std::greater<int>(), _1, 5),  //@ 大于5
+	std::bind(std::less_equal<int>(),_1, 10)); //@ 小于等于10
+int count = std::count_if(vec.begin(),vec.end(),f);
+```
+
 
 
 
