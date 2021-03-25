@@ -93,5 +93,34 @@ std::function<int(int)> f1 = [](int a) {return a; };
 std::function<int(void)> f2 = std::bind([](int a) { return a; },123);
 ```
 
+没有捕获任何变量的 lambda 表达式，可以转换成一个普通的函数指针：
+
+```
+using func_t = int(*)(int);
+func_t f = [](int a) { return a; };
+f(12);
+```
+
+lambda  表达式的 operator() 是 const 的，这也是为什么按值捕获无法修改变量的本质原因，使用 mutable 则取消了 operator() 的 const ，因而可以修改变量。
+
+# 声明式编程
+
+```
+std::vector<int> vec{1,2,3,4,5,6,7,8,9};
+int even_count{ 0 };
+std::for_each(vec.begin(), vec.end(), [&even_count](int x) {if (!(x & 1)) ++even_count; }); //@ 不要提前定义仿函数
+```
+
+# 在需要的时间和地点实现闭包
+
+```
+std::vector<int> vec{1,2,3,4,5,6,7,8,9};
+std::count_if(vec.begin(), vec.end(), [](int val) {return val > 5 && val <= 10; });  //@ 大于 5 小于等于10
+```
+
+
+
+
+
 
 
