@@ -28,3 +28,5 @@
 - 范围 for 使用细节
 - 自定义类型支持范围 for
 
+# std::function 与 bind 绑定器
+
