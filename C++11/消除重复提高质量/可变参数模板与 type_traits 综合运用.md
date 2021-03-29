@@ -448,6 +448,28 @@ private:
 };
 ```
 
+测试：
+
+```
+void testAny()
+{
+	std::vector<Any> vec;
+	vec.push_back(1);
+	vec.push_back(std::string("hello"));
+	auto v1 = vec[0].AnyCast<int>();
+	auto v2 = vec[1].AnyCast<std::string>();
+
+	Any any2 = 100;
+	auto res = any2.AnyCast<int>();
+
+	Any any;
+	auto r = any.IsNull();  //@ true
+	std::string s1 = "hello";
+	any = s1;
+	any.AnyCast<int>(); //@ crash
+}
+```
+
 
 
 
