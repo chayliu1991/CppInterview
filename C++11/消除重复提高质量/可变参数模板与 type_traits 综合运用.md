@@ -479,7 +479,116 @@ void testAny()
 }
 ```
 
+# function_traits
 
+function_traits 可以用来获取函数的实际类型、返回类型、参数个数、参数具体的类型：
+
+```
+template<typename T>
+struct function_traits;
+
+//@ 普通函数.
+template<typename Ret, typename... Args>
+struct function_traits<Ret(Args...)>
+{
+public:
+	enum { arity = sizeof...(Args) };
+	typedef Ret function_type(Args...);
+	typedef Ret return_type;
+	using stl_function_type = std::function<function_type>;
+	typedef Ret(*pointer)(Args...);
+
+	template<size_t I>
+	struct args
+	{
+		static_assert(I < arity, "index is out of range, index must less than sizeof Args");
+		using type = typename std::tuple_element<I, std::tuple<Args...>>::type; //@ 获取指定位置的元素类型
+	};
+
+	typedef std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...> tuple_type;
+	typedef std::tuple<std::remove_const_t<std::remove_reference_t<Args>>...> bare_tuple_type;
+};
+
+//@函数指针.
+template<typename Ret, typename... Args>
+struct function_traits<Ret(*)(Args...)> : function_traits<Ret(Args...)> {};
+
+//@ std::function.
+template <typename Ret, typename... Args>
+struct function_traits<std::function<Ret(Args...)>> : function_traits<Ret(Args...)> {};
+
+//@ member function.
+#define FUNCTION_TRAITS(...)\
+template <typename ReturnType, typename ClassType, typename... Args>\
+struct function_traits<ReturnType(ClassType::*)(Args...) __VA_ARGS__> : function_traits<ReturnType(Args...)>{};
+
+FUNCTION_TRAITS()
+FUNCTION_TRAITS(const)
+FUNCTION_TRAITS(volatile)
+FUNCTION_TRAITS(const volatile)
+
+//@ 函数对象
+template<typename Callable>
+struct function_traits : function_traits<decltype(&Callable::operator())> {};
+
+template <typename Function>
+typename function_traits<Function>::stl_function_type to_function(const Function& lambda)
+{
+	return static_cast<typename function_traits<Function>::stl_function_type>(lambda);
+}
+
+template <typename Function>
+typename function_traits<Function>::stl_function_type to_function(Function&& lambda)
+{
+	return static_cast<typename function_traits<Function>::stl_function_type>(std::forward<Function>(lambda));
+}
+
+template <typename Function>
+typename function_traits<Function>::pointer to_function_pointer(const Function& lambda)
+{
+	return static_cast<typename function_traits<Function>::pointer>(lambda);
+}
+```
+
+测试：
+
+```
+template<typename T>
+void PrintType()
+{
+	std::cout << typeid(T).name() << std::endl;
+}
+
+float(*castfunc)(std::string, int);
+float free_function(const std::string& a, int b)
+{
+	return (float)a.size() / b;
+}
+
+struct AA
+{
+	int f(int a, int b)volatile { return a + b; }
+	int operator()(int)const { return 0; }
+};
+
+
+void testFunctionTraits()
+{
+	std::function<int(int)> f = [](int a) {return a; };
+	PrintType<function_traits<std::function<int(int)>>::function_type>();
+	PrintType<function_traits<std::function<int(int)>>::args<0>::type>();
+
+	PrintType<function_traits<decltype(f)>::function_type>();
+	PrintType<function_traits<decltype(castfunc)>::function_type>();
+	PrintType<function_traits<decltype(free_function)>::function_type>();
+
+	PrintType<function_traits<AA>::function_type>();
+	using T = decltype(&AA::f);
+	PrintType<T>();
+
+	PrintType<function_traits<decltype(&AA::f)>::function_type>();
+}
+```
 
 
 
