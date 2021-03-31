@@ -5,14 +5,20 @@ std::shared_ptr 使用引用计数，每个 std::shared_ptr 的拷贝都指向�
 ## 初始化
 
 - 构造函数。
+
 - std::make_shared<T>，优先使用，更加高效。
+
 - reset，原来的智能指针如果有值，引用计数会减1。
 
-	std::shared_ptr<int> p1(new int(1));
-	std::shared_ptr<int> p2;
-	p2.reset(new int(2));
-	std::shared_ptr<int> p3 = std::make_shared<int>(3);
-不能将原始指针直接赋值给智能指针：
+```
+  std::shared_ptr<int> p1(new int(1));
+  std::shared_ptr<int> p2;
+  p2.reset(new int(2));
+  std::shared_ptr<int> p3 = std::make_shared<int>(3);
+```
+
+
+ 不能将原始指针直接赋值给智能指针：
 
 ```
 std::shared_ptr<int> p4 = new int(4); //@  错误
