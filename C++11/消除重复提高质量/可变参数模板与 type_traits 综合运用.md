@@ -880,7 +880,114 @@ private:
 };
 ```
 
+测试：
 
+```
+void testVariant()
+{
+	typedef Variant<int, double, std::string, int> cv;
+
+	//根据index获取类型
+	std::cout << typeid(cv::IndexType<1>).name() << std::endl;
+
+	//根据类型获取索引
+	cv v = 10;
+	int i = v.GetIndexOf<std::string>();
+	std::cout << "i = " << i << std::endl;
+
+	//通过一组lambda访问vairant
+	v.Visit([&](double i) {std::cout << "double: " << i << std::endl; },
+		[&](short i) {std::cout << "short: " << i << std::endl; },
+		[](int i) {std::cout << "int: " << i << std::endl; },
+		[](std::string i) {std::cout << "std::string: " << i << std::endl; });
+
+	bool emp1 = v.Empty();
+	std::cout << v.Type().name() << std::endl;
+}
+```
+
+# ScopeGuard
+
+ScopeGuard 的作用是确保资源面对非正常返回(函数在中途返回，中途抛出异常)导致后面释放资源的代码没有被执行时能够自动释放资源，没有发生异常则正常结束。
+
+ScopeGuard 利用了局部变量析构函数来管理资源，利用了 RAII 机制。
+
+```
+template <typename F>
+class ScopeGuard
+{
+public:
+	explicit ScopeGuard(F && f) : m_func(std::move(f)), m_dismiss(false) {}
+	explicit ScopeGuard(const F& f) : m_func(f), m_dismiss(false) {}
+
+	~ScopeGuard()
+	{
+		if (!m_dismiss)
+			m_func();
+	}
+
+	ScopeGuard(ScopeGuard && rhs) : m_func(std::move(rhs.m_func)),
+		m_dismiss(rhs.m_dismiss)
+	{
+		rhs.Dismiss();
+	}
+
+	void Dismiss()
+	{
+		m_dismiss = true;
+	}
+
+private:
+	F m_func;
+	bool m_dismiss;
+
+	ScopeGuard();
+	ScopeGuard(const ScopeGuard&);
+	ScopeGuard& operator=(const ScopeGuard&);
+};
+
+
+template <typename F>
+ScopeGuard<typename std::decay<F>::type> MakeGuard(F && f)
+{
+	return ScopeGuard<typename std::decay<F>::type>(std::forward<F>(f));
+}
+```
+
+ 测试：
+
+```
+void TestScopeGuard()
+{
+	std::function < void()> f = []()
+	{ std::cout << "cleanup from unnormal exit" << std::endl; };
+	//正常退出
+	{
+		auto gd = MakeGuard(f);
+		//...
+		gd.Dismiss();  //表明前面我是正常的清理了资源，属于正常退出的
+	}
+
+	//异常退出
+	try
+	{
+		auto gd = MakeGuard(f);
+		//...
+		throw 1;
+	}
+	catch (...)
+	{
+		std::cout << "捕获到了一个异常！！\n\n";
+	}
+
+	//非正常退出
+	{
+		auto gd = MakeGuard(f);
+		return;  //非正常退出表示资源还没清理呢，，等着ScopeGuard自动清理
+				 //...
+	}
+}
+```
 
 
 
