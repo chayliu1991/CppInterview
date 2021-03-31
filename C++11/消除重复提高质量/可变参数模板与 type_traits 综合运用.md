@@ -989,6 +989,125 @@ void TestScopeGuard()
 }
 ```
 
+# tuple_helper
+
+std::tuple 具有很多编译期计算的特性，正是这些独特的特性使得它既能用于编译期计算，又可以用于运行期计算。
+
+## 打印 tuple
+
+### 模板类特化和递归调用结合展开 tuple
+
+```
+template <class Tuple,size_t N>
+struct TuplePrinter
+{
+	static void print(const Tuple& t)
+	{
+		TuplePrinter<Tuple, N - 1>::print(t);
+		std::cout << "," << std::get<N - 1>(t);
+	}
+};
+
+template <class Tuple>
+struct TuplePrinter<Tuple, 1>
+{
+	static void print(const Tuple& t)
+	{
+		std::cout << std::get<0>(t);
+	}
+};
+
+template<class...Args>
+void PrintTuple(const std::tuple<Args...>& t)
+{
+	std::cout << "(";
+	TuplePrinter<decltype(t), sizeof...(Args)>::print(t);
+	std::cout << ")\n";
+}
+```
+
+测试：
+
+```
+void testPrintTuple()
+{
+	std::tuple<int, short, double, char,std::string> tp = std::make_tuple(1, 2, 3, 'a',std::string("hello"));
+	PrintTuple(tp);
+}
+```
+
+调用过程是：
+
+```
+//@ 递归
+PrintTuple<std::tuple<int, short, double, char, std::string>,5>::print(tp)
+PrintTuple<std::tuple<int, short, double, char, std::string>, 4>::print(tp)
+PrintTuple<std::tuple<int, short, double, char, std::string>, 3>::print(tp)
+PrintTuple<std::tuple<int, short, double, char, std::string>, 2>::print(tp)
+PrintTuple<std::tuple<int, short, double, char, std::string>, 1>::print(tp)
+
+//@ 递归终止，逐层返回并打印
+std::cout<<std::get<0>(t);
+std::cout<<std::get<1>(t);
+std::cout<<std::get<2>(t);
+std::cout<<std::get<3>(t);
+std::cout<<std::get<4>(t);
+```
+
+### 通过索引序列来展开并 tuple
+
+```
+template <int...>
+struct IndexTuple {};
+
+template <int N, int...Indexs>
+struct MakeIndexes : MakeIndexes<N - 1, N - 1, Indexs...> {};
+
+template <int...Indexs>
+struct MakeIndexes<0, Indexs...>
+{
+	typedef IndexTuple<Indexs...> type;
+};
+
+template <typename T>
+void Print(T t)
+{
+	std::cout << t << std::endl;
+}
+
+template <typename T, typename ...Args>
+void Print(T t, Args...args)
+{
+	std::cout << t << std::endl;
+	Print(args...);
+}
+
+template <typename Tuple, int...Indexs>
+void Transform(IndexTuple<Indexs...>& in, Tuple& tp)
+{
+	Print(std::get<Indexs>(tp)...);
+}
+```
+
+测试：
+
+```
+void testPrintTuple()
+{
+	using Tuple = std::tuple<int, double, char>;
+	Tuple tp = std::make_tuple(1, 2.9, 'a');
+	Transform(MakeIndexes<std::tuple_size<Tuple>::value>::type(), tp);
+}
+```
+
+## 根据元素值获取索引位置
+
+
+
+
+
+
+
 
 
 
