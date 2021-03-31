@@ -98,6 +98,82 @@ f(sp,g());
 
 ### 通过 shared_from_this() 返回 this 指针
 
+不要将 this 指针作为 std::shared_ptr 返回，因为 this 本质上是一个裸指针，因此可能导致重复析构。
+
+```
+struct A
+{
+	std::shared_ptr<A> GetSelf()
+	{
+		return std::shared_ptr<A>(this); //@ 不要这样做
+	}
+};
+
+int main(void)
+{
+	//@ 使用同一个指针 this 构造了两个智能指针，而它们之间没有任何联系
+	//@ 离开作用域之后 sp1 sp2 都将析构导致重复析构的问题
+	std::shared_ptr<A> sp1(new A);
+	std::shared_ptr<A> sp2 = sp1->GetSelf();
+
+	return 0;
+}
+```
+
+正确返回 this 的 std::shared_ptr  的方法是：让目标类通过派生 std::enable_shared_from_this<T> 类，然后使用基类的成员函数 shared_from_this 来返回 this 的  std::shared_ptr：
+
+```
+struct A : std::enable_shared_from_this<A>
+{
+	std::shared_ptr<A> GetSelf()
+	{
+		return shared_from_this();
+	}
+};
+
+int main(void)
+{
+	//@ OK
+	std::shared_ptr<A> sp1(new A);
+	std::shared_ptr<A> sp2 = sp1->GetSelf();
+	return 0;
+}
+```
+
+### 避免循环引用
+
+智能指针的循环引用将导致内存泄漏：
+
+```
+struct A {
+	std::shared_ptr<B> bPtr;
+	~A() { std::cout << "A is deleted!" << std::endl; }
+};
+
+struct B {
+	std::shared_ptr<A> aPtr;
+	~B() { std::cout << "B is deleted!" << std::endl; }
+};
+
+void testPtr()
+{
+	std::shared_ptr<A> aP(new A);
+	std::shared_ptr<B> bP(new B);
+	aP->bPtr = bP;
+	bP->aPtr = aP;
+}
+
+int main(void)
+{
+	testPtr();
+	return 0;
+}
+```
+
+循环引用导致 aP，bP 的引用计数是2，在离开作用域之后， aP，bP 的引用计数都减少为1，并不会减少为0，导致两个指针都不会被析构，产生了内存泄漏。
+
+解决办法是将 A 和 B 中任何一个成员变量改成 std::weak_ptr。
+
 
 
 
