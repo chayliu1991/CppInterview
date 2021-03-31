@@ -1102,6 +1102,151 @@ void testPrintTuple()
 
 ## 根据元素值获取索引位置
 
+```
+namespace detail
+{
+	//对于可转换的类型值则直接比较
+	template <typename T, typename U>
+	typename std::enable_if<std::is_convertible<T, U>::value ||
+		std::is_convertible<U, T>::value, bool>::type
+		compare(T t, U u)
+	{
+		return t == u;
+	}
+
+	//不能互相转换的则直接返回false
+	bool compare(...)
+	{
+		return false;
+	}
+
+
+	//根据值查找索引
+	template<int I, typename T, typename... Args>
+	struct find_index
+	{
+		static int call(std::tuple<Args...> const& t, T&& val)
+		{
+			return (compare(std::get<I - 1>(t), val) ? I - 1 :
+				find_index<I - 1, T, Args...>::call(t, std::forward<T>(val)));
+		}
+	};
+
+	template<typename T, typename... Args>
+	struct find_index<0, T, Args...>
+	{
+		static int call(std::tuple<Args...> const& t, T&& val)
+		{
+			return compare(std::get<0>(t), val) ? 0 : -1;
+		}
+	};
+}
+
+template<typename T, typename... Args>
+int find_index(std::tuple<Args...> const& t, T&& val)
+{
+	return detail::find_index<sizeof...(Args), T, Args...>::call(t, std::forward<T>(val));
+}
+```
+
+测试：
+
+```
+void testFindIndex()
+{
+	std::tuple<int, double, std::string> tp = std::make_tuple(1, 2, std::string("OK"));
+	int index = find_index(tp, std::string("OK"));
+
+	std::cout << index << std::endl;
+}
+```
+
+## 在运行期根据索引获取元素
+
+```
+int i = 0;
+std::get<i>(tuple); //@ 不合法
+```
+
+要通过运行时的变量来获取 tuple 中元素值，需要将运行期的变量映射为编译期常量。
+
+ ```
+template <size_t k, typename Tuple>
+typename std::enable_if<(k == std::tuple_size<Tuple>::value)>::type
+GetArgByIndex(size_t index, Tuple& tp)
+{
+	throw std::invalid_argument("arg index out of range");
+}
+
+template <size_t k = 0, typename Tuple>
+typename std::enable_if<(k < std::tuple_size<Tuple>::value)>::type
+	GetArgByIndex(size_t index, Tuple& tp)
+{
+	if (k == index)
+	{
+		std::cout << std::get<k>(tp) << std::endl;
+	}
+	else
+	{
+		GetArgByIndex<k + 1>(index, tp);
+	}
+}
+
+ ```
+
+测试：
+
+```
+void testGetByIndex()
+{
+	using Tuple = std::tuple<int, double, std::string, int>;
+	Tuple tp = std::make_tuple(1, 2, "test", 3);
+	const size_t length = std::tuple_size<Tuple>::value;
+
+	//打印每个元素
+	for (size_t i = 0; i < length; ++i)
+	{
+		GetArgByIndex<0>(i, tp);
+	}
+
+	GetArgByIndex(4, tp);  //索引超出范围将抛出异常
+}
+```
+
+这里通过递归方式自增编译期常量 K，将 K 与运行期变量 index 做比较，两者相等时，调用编译期常量 K 来获取 tuple 中的第 K 个元素。
+
+还可以通过参数包逐步展开的方式：
+
+```
+template <typename Arg>
+void GetArgByIndex(int index, std::tuple<Arg>& tp)
+{
+	std::cout << std::get<0>(tp) << std::endl;
+}
+
+template <typename Arg, typename... Args>
+void GetArgByIndex(int index, std::tuple<Arg, Args...>& tp)
+{
+	if (index < 0 || index >= std::tuple_size<std::tuple<Arg, Args...>>::value)
+	{
+		throw std::invalid_argument("index is not valid");
+	}
+
+	if (index > 0)
+	{
+		GetArgByIndex(index - 1, (std::tuple<Args...>&) tp);
+	}
+	else
+	{
+		std::cout << std::get<0>(tp) << std::endl;
+	}
+}
+```
+
+## 遍历 tuple
+
+
+
 
 
 
