@@ -1415,6 +1415,46 @@ void testTupleReverse()
 
 ## 应用于函数
 
+将 tuple 应用于函数是将 tuple 展开作为函数的参数。
+
+```
+template <int...>
+struct IndexTuple {};
+
+template <int N, int...Indexs>
+struct MakeIndexes : MakeIndexes<N - 1, N - 1, Indexs...> {};
+
+template <int...Indexs>
+struct MakeIndexes<0, Indexs...>
+{
+	typedef IndexTuple<Indexs...> type;
+};
+
+template <typename F, typename Tuple, int...Indexes>
+auto apply(F&& f, IndexTuple<Indexes...>&& in, Tuple&& tp) ->
+decltype(std::forward<F>(f)(std::get<Indexes>(tp)...))
+{
+	std::forward<F>(f)(std::get<Indexes>(tp)...);
+}
+```
+
+测试：
+
+```
+void TestF(int a, double b)
+{
+	std::cout << a + b << std::endl;
+}
+
+int main(void)
+{
+	apply(TestF, MakeIndexes<2>::type(), std::make_tuple(1, 2));  //输出 : 3
+
+	system("pause");
+	return 0;
+}
+```
+
 
 
 
