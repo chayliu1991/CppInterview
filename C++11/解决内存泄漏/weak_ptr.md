@@ -3,7 +3,7 @@
 - std::weak_ptr 没有重载 * 和 ->，因为它不共享指针，不能操作资源。
 - std::weak_ptr 可以用来返回 this 指针和解决循环引用的问题。
 
-# 基本用法
+# std::weak_ptr  基本用法
 
 ## use_count 获取当前观测资源的引用计数
 
@@ -87,6 +87,60 @@ struct A : public std::enable_shared_from_this<A>
 };
 std::shared_ptr<A> sp1(new A);
 std::shared_ptr<A> sp2 = sp1->GetSelf();
+```
+
+# std::weak_ptr 解决循环引用
+
+std::shared_ptr 的循环引用将导致内存泄漏：
+
+```
+struct A;
+struct B;
+
+struct A {
+	std::shared_ptr<B> bPtr;
+	~A() { std::cout << "A is deleted!" << std::endl; }
+};
+
+struct B {
+	std::shared_ptr<A> aPtr;
+	~B() { std::cout << "B is deleted!" << std::endl; }
+};
+
+void testPtr()
+{
+	std::shared_ptr<A> aP(new A);
+	std::shared_ptr<B> bP(new B);
+	aP->bPtr = bP;
+	bP->aPtr = aP;
+}
+
+int main(void)
+{
+	testPtr();
+	//@ 资源不会被释放
+	return 0;
+}
+```
+
+由于循环引用导致程序结束时 aP 和 bP 的引用计数并没有减少到 0 导致内存泄漏。
+
+解决的办法是将 A 中的 bPtr 或者 B 中的 aPtr 任意一个修改为 std::weak_ptr ：
+
+```
+struct A;
+struct B;
+
+struct A {
+	std::weak_ptr<B> bPtr;
+	~A() { std::cout << "A is deleted!" << std::endl; }
+};
+
+struct B {
+	std::shared_ptr<A> aPtr;
+	//@ std::weak_ptr<A> aPtr;
+	~B() { std::cout << "B is deleted!" << std::endl; }
+};
 ```
 
 

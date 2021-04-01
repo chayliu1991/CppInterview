@@ -151,6 +151,9 @@ int main(void)
 智能指针的循环引用将导致内存泄漏：
 
 ```
+struct A;
+struct B;
+
 struct A {
 	std::shared_ptr<B> bPtr;
 	~A() { std::cout << "A is deleted!" << std::endl; }
