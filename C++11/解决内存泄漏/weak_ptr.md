@@ -65,6 +65,30 @@ int main()
 }
 ```
 
+# std::weak_ptr 返回 this 指针
+
+不能直接将 this 指针返回给 std::shared_ptr，需要通过派生 std::enable_shared_from_this 类，并通过方法 std::enable_from_this 来返回 智能指针。本质上：
+
+- std::enable_shared_from_this 内部有一个  std::weak_ptr，这个 std::weak_ptr 用来观测 this 指针。
+- 调用 shared_from_this  实际上内部调用了 std::weak_ptr 的 lock 方法返回一个 std::shared_ptr。
+
+```
+struct A : public std::enable_shared_from_this<A>
+{
+	std::shared_ptr<A> GetSelf()
+	{
+		return shared_from_this();
+	}
+
+	~A()
+	{
+		std::cout << "A is deleted" << std::endl;
+	}
+};
+std::shared_ptr<A> sp1(new A);
+std::shared_ptr<A> sp2 = sp1->GetSelf();
+```
+
 
 
 
