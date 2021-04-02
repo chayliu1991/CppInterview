@@ -77,10 +77,48 @@ std::cout << t3.count() << " seconds" << std::endl;
 duration 的加减运算有一定规则，当两个 duration 的时钟周期不同的时候，会先统一成一种时钟，然后再作加减运算，统一成一种时钟的规则如下：
 
 ```
+std::chrono::duration<double, std::ratio<9, 7>> dura1(3);
+std::chrono::duration<double, std::ratio<6, 5>> dura2(1);
+auto dura3 = dura1 - dura2;
 
+//@ class std::chrono::duration<double,struct std::ratio<3,35> >
+std::cout << typeid(dura3).name() << std::endl;
+std::cout << dura3.count() << std::endl;  //@ 31
 ```
 
+- 9/7,6/5 分子取最大公约数 3，分母取最小公倍数 35，所以统一的形式为：`class std::chrono::duration<double,struct std::ratio<3,35>>`
+- 计算时钟周期的方式：`((9 / 7) / (3 / 35) * 3) - ((6 / 5) / (3 / 35) * 1)`
 
+可以通过 duration_cast<>()  将当前的时钟周期转换成其它的时钟周期：
+
+```
+std::cout << std::chrono::duration_cast<std::chrono::seconds>(dura3).count() << " minutes" << std::endl;
+```
+
+# time_point
+
+time_point 表示一个时间点，用来获取从它的 clock 纪元(比如 1970.1.1) 开始所经历的 duration，time_point  必须用 clock 来计时，time_point  有一个函数 time_from_epoch() 来获取从 1970年1月1日到 time_point  时间经过的 duration。
+
+ ```
+using namespace std::chrono;
+typedef duration<int, std::ratio<60 * 60 * 24>> days_type;
+time_point<system_clock, days_type> today = time_point_cast<days_type>(system_clock::now());
+std::cout << today.time_since_epoch().count() << " days since epoch" << std::endl;
+ ```
+
+不同 clock 的 time_point 不能进行算术运算。
+
+time_point  可以和 duration 相加减：
+
+```
+using namespace std::chrono;
+system_clock::time_point now = system_clock::now();
+std::time_t last = system_clock::to_time_t(now - hours(24));
+std::time_t next = system_clock::to_time_t(now + hours(24));
+
+std::cout << "One day ago,the time was" << std::put_time(std::localtime(&last), "%F %T") << std::endl;
+std::cout << "One day after,the time is" << std::put_time(std::localtime(&next), "%F %T") << std::endl;
+```
 
 
 
