@@ -120,6 +120,36 @@ std::cout << "One day ago,the time was" << std::put_time(std::localtime(&last), 
 std::cout << "One day after,the time is" << std::put_time(std::localtime(&next), "%F %T") << std::endl;
 ```
 
+# clocks
+
+clocks 表示当前的系统时钟，内部有 time_point，duration，Rep，Period 等信息，主要用来获取当前时间，以及实现 time_t 和 time_point 的相互转换，clocks 包含如下 3 种时钟：
+
+- system_clock，代表真实世界的挂钟时间，具体事件值依赖于系统，system_clock 保证提供的时间值是一个可读时间。
+- steady_clock，不能被调整的时钟，并不一定代表真实世界的挂钟时间，保证先调用 now() 得到的时间值不会递减。
+- high_resolution_clock，高精度时钟，实际上是 system_clock 或者 steady_clock 的别名，可以通过 now()  来获取当前的时间点。
+
+```
+using namespace std::chrono;
+system_clock::time_point t1 = system_clock::now();
+std::cout << "hello,world\n";
+system_clock::time_point t2 = system_clock::now();
+std::cout << (t2 - t1).count() << " tick counts "<<std::endl;
+```
+
+通过 duration_cast 将其转换为其它时钟周期的 duration：
+
+````
+std::cout << duration_cast<nanoseconds>(t2 - t1).count() << " nanoseconds" << std::endl;
+std::cout << duration_cast<microseconds>(t2 - t1).count() << " microseconds" << std::endl;
+std::cout << duration_cast<milliseconds>(t2 - t1).count() << " milliseconds" << std::endl;
+````
+
+system_clock  的 to_time_t 方法可以将一个 time_point 转换成 ctime：
+
+```
+
+```
+
 
 
 
