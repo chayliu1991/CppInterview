@@ -144,10 +144,92 @@ std::cout << duration_cast<microseconds>(t2 - t1).count() << " microseconds" << 
 std::cout << duration_cast<milliseconds>(t2 - t1).count() << " milliseconds" << std::endl;
 ````
 
-system_clock  的 to_time_t 方法可以将一个 time_point 转换成 ctime：
+system_clock  的 to_time_t 方法可以将一个 time_point 转换成 ctime，system_clock::from_time_t 可以反向转换：
 
 ```
+using namespace std::chrono;
+system_clock::time_point now = system_clock::now();
+//@ time_point 转换成 time_t
+std::time_t now_c = system_clock::to_time_t(now);
+//@ time_t 转换成 time_point
+system_clock::time_point now_tp = system_clock::from_time_t(now_c);
+```
 
+system_clock  和 std::put_time 配合起来使用可以格式化日期的输出：
+
+```
+using namespace std::chrono;
+std::time_t now_c = system_clock::to_time_t(system_clock::now());
+std::cout << std::put_time(std::localtime(&now_c), "%Y-%m-%d %X") << std::endl;
+std::cout << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H.%M.%S") << std::endl;
+std::cout << std::put_time(std::localtime(&now_c), "%F %T") << std::endl;
+```
+
+# 计时器
+
+利用 high_resolution_clock 来实现一个定时器：
+
+```
+class Timer
+{
+public:
+	Timer() :begin_(std::chrono::high_resolution_clock::now()) {}
+	void reset() { begin_ = std::chrono::high_resolution_clock::now(); }
+
+	//@ 默认输出毫秒
+	template <typename Duration = std::chrono::milliseconds>
+	int64_t elapsed() const
+	{
+		return std::chrono::duration_cast<Duration>(std::chrono::high_resolution_clock::now() - begin_).count();
+	}
+
+	//@ 微妙
+	int64_t elapsed_micro() const
+	{
+		return elapsed<std::chrono::microseconds>();
+	}
+
+	//@ 纳秒
+	int64_t elapsed_nano() const
+	{
+		return elapsed<std::chrono::nanoseconds>();
+	}
+
+	//@ 秒
+	int64_t elapsed_seconds() const
+	{
+		return elapsed<std::chrono::seconds>();
+	}
+
+	//@ 分
+	int64_t elapsed_minutes() const
+	{
+		return elapsed<std::chrono::minutes>();
+	}
+
+	//@ 时
+	int64_t elapsed_hours() const
+	{
+		return elapsed<std::chrono::hours>();
+	}
+
+private:
+	std::chrono::time_point<std::chrono::high_resolution_clock> begin_;
+};
+
+int main()
+{
+	Timer t;
+	std::cout << "hello" << std::endl;
+	std::cout << t.elapsed() << " ms" << std::endl;
+	std::cout << t.elapsed_seconds() << " s" << std::endl;
+	std::cout << t.elapsed_micro() << " us" << std::endl;
+	std::cout << t.elapsed_nano() << " ns" << std::endl;
+	std::cout << t.elapsed_minutes() << " min" << std::endl;
+	std::cout << t.elapsed_hours() << " hour" << std::endl;
+
+	return 0;
+}
 ```
 
 
