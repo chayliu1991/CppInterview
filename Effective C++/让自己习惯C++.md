@@ -304,7 +304,107 @@ public:
 
 # 确保对象在使用前被初始化
 
+## 对象初始化方法
 
+C++ 的规则规定一个对象的数据成员在进入构造函数的函数体之前被初始化。
+
+```
+class PhoneNumber { ... };
+class ABEntry 
+{   
+public:
+  ABEntry(const std::string& name, const std::string& address,
+          const std::list<PhoneNumber>& phones);
+private:
+  std::string theName;
+  std::string theAddress;
+  std::list<PhoneNumber> thePhones;
+  int num TimesConsulted;
+};
+
+//@ 构造函数
+ABEntry::ABEntry(const std::string& name, const std::strinQWg& address,
+                 const std::list<PhoneNumber>& phones)
+
+{
+  //@ 下面执行的是赋值不是初始化
+  theName = name;                       
+  theAddress = address;                
+  thePhones = phones;
+  numTimesConsulted = 0;
+}
+
+//@ 构造函数
+ABEntry::ABEntry(const std::string& name, const std::string& address,
+                 const std::list<PhoneNumber>& phones)
+: theName(name),
+  theAddress(address),                  //@ 执行初始化
+  thePhones(phones),
+  numTimesConsulted(0)
+{}   //@ 构造函数体为空
+```
+
+初始化列表中的参数就可以作为各种数据成员的构造函数所使用的参数。在这种情况下，theName 从 name 中 copy-constructed（拷贝构造），theAddress 从 address 中 copy-constructed（拷贝构造），thePhones 从 phones 中 copy-constructed（拷贝构造）。对于大多数类型来说，只调用一次拷贝构造函数的效率比先调用一次缺省构造函数再调用一次拷贝赋值运算符的效率要高（有时会高很多）。
+
+对于 numTimesConsulted 这样的内建类型的对象，初始化和赋值没有什么不同，但为了统一性，最好是经由成员初始化来初始化每一件东西。
+
+当只想缺省构造一个数据成员时也可以使用成员初始化列表，只是不必指定初始化参数而已。例如，如果 ABEntry 有一个不取得参数的构造函数，它可以像这样实现：
+
+```
+ABEntry::ABEntry()
+:theName(),                         //@ 调用 theName 的默认构造函数
+ theAddress(),                      //@ 调用 theAddress 的默认构造函数
+ thePhones(),                       //@ 调用 thePhones 的默认构造函数
+ numTimesConsulted(0)               //@ 显式初始化
+{}      
+```
+
+在初始化列表中总是列出每一个数据成员，这就可以避免一旦发生疏漏就必须回忆起可能是哪一个数据成员没有被初始化。因为 numTimesConsulted 是一个内建类型，如果将它从成员初始化列表中删除，就为未定义行为打开了方便之门。 
+
+有时候即使是内建类型，初始化列表也必须使用：比如，const 或 references data members 是必须被初始化的，它们不能被赋值。
+
+C++ 对象的数据被初始化的顺序总是相同的：
+
+- 基类在派生类之前被初始化。
+- 在一个类内部，数据成员按照它们被声明的顺序被初始化。
+
+为了避免读者混淆，以及一些模糊不清的行为引起错误的可能性，初始化列表中的成员的排列顺序应该总是与它们在类中被声明的顺序保持一致。
+
+## 跨转换单元的静态对象初始化问题
+
+一个静态对象的生存期是从它创建开始直到程序结束。程序结束时静态对象会自动销毁，也就是当 main 停止执行时会自动调用它们的析构函数。
+
+静态对象按照定义的位置可以分为：
+
+- 在函数内部的静态对象称为 **局部静态对象**。
+- 全局对象、定义在命名空间范围内的对象、在类内部声明为静态的对象、在文件范围内被声明为静态的对象称为 **非局部静态对象**。
+
+用局部静态对象取代非局部静态对象。
+
+```
+class FileSystem { ... };          
+
+FileSystem& tfs()                   
+{                                  
+  static FileSystem fs;          
+  return fs;                      
+}
+
+class Directory { ... };           
+
+Directory::Directory( params )     
+{                                
+  ...
+  std::size_t disks = tfs().numDisks();
+  ...
+}
+
+Directory& tempDir()             
+{                                  
+  static Directory td;              
+  return td;                      
+}
+```
 
 
 
