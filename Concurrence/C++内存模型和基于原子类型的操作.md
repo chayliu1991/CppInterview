@@ -73,9 +73,120 @@ namespace std {
 }
 ```
 
+原子类型不允许由另一个原子类型拷贝赋值，因为拷贝赋值调用了两个对象，破坏了操作的原子性。但可以用对应的内置类型赋值：
 
+```
+T operator=(T desired) noexcept;
+T operator=(T desired) volatile noexcept;
+atomic& operator=(const atomic&) = delete;
+atomic& operator=(const atomic&) volatile = delete;
+```
 
+std::atomic 为支持赋值提供了成员函数：
 
+```
+std::atomic<T>::store //@ 替换当前值
+std::atomic<T>::load //@ 返回当前值
+std::atomic<T>::exchange //@ 替换值，并返回被替换前的值
+
+//@ 与期望值比较，不等则将期望值设为原值并返回false
+//@ 相等则将原子值设为目标值并返回true
+//@ 在缺少CAS（compare-and-exchange）指令的机器上，weak版本在相等时可能替换失败并返回false
+//@ 因此weak版本通常要求循环，而strong版本返回false就能确保不相等
+std::atomic<T>::compare_exchange_weak
+std::atomic<T>::compare_exchange_strong
+
+std::atomic<T>::fetch_add //@ 原子加法，返回相加前的值
+std::atomic<T>::fetch_sub
+std::atomic<T>::fetch_and
+std::atomic<T>::fetch_or
+std::atomic<T>::fetch_xor
+std::atomic<T>::operator++ //@ 前自增等价于fetch_add(1)+1
+std::atomic<T>::operator++(int) //@ 后自增等价于fetch_add(1)
+std::atomic<T>::operator-- //@ fetch_sub(1)-1
+std::atomic<T>::operator--(int) //@ fetch_sub(1)
+std::atomic<T>::operator+= //@ fetch_add(x)+x
+std::atomic<T>::operator-= //@ fetch_sub(x)-x
+std::atomic<T>::operator&= //@ fetch_and(x)&x
+std::atomic<T>::operator|= //@ fetch_or(x)|x
+std::atomic<T>::operator^= //@ fetch_xor(x)^x
+```
+
+这些成员函数有一个用来指定内存序的参数 std::memory_order：
+
+```
+typedef enum memory_order {
+    memory_order_relaxed,
+    memory_order_consume,
+    memory_order_acquire,
+    memory_order_release,
+    memory_order_acq_rel,
+    memory_order_seq_cst
+} memory_order;
+```
+
+store 的顺序参数只能是：
+
+- memory_order_relaxed
+- memory_order_release
+- memory_order_seq_cst (默认)
+
+load的顺序参数只能是：
+
+- memory_order_relaxed
+- memory_order_consume
+- memory_order_acquire
+- memory_order_seq_cst (默认)
+
+## std::atomic_flag
+
+std::atomic_flag 是一个原子的布尔类型，也是唯一保证 lock-free 的原子类型。它只能在  set 和 clear 两个状态之间切换，并且初始化时只能为 clear，且必须用 ATOMIC_FLAG_INIT 初始化：
+
+```
+std::atomic_flag x = ATOMIC_FLAG_INIT;
+//@ 不能为读操作语义：memory_order_consume、memory_order_acquire、memory_order_acq_rel
+x.clear(std::memory_order_release); //@ 将状态设为clear（false）				
+bool y = x.test_and_set(); //@ 将状态设为set（true）且返回之前的值
+```
+
+用 std::atomic_flag 实现自旋锁：
+
+```
+class spinlock_mutex {
+	std::atomic_flag flag = ATOMIC_FLAG_INIT;
+public:
+	void lock()
+	{
+		while (flag.test_and_set(std::memory_order_acquire));
+	}
+	void unlock()
+	{
+		flag.clear(std::memory_order_release);
+	}
+};
+```
+
+测试：
+
+```
+spinlock_mutex m;
+static int g_variable = 0;
+void f(int n)
+{
+	m.lock();
+	++g_variable;
+	std::cout << "thread:"<<n<<" output: "<< g_variable << '\n';
+	m.unlock();
+}
+
+int main()
+{
+	std::vector<std::thread> v;
+	for (int i = 0; i < 10; ++i)
+		v.emplace_back(f, i);
+	std::for_each(v.begin(),v.end(),std::mem_fun_ref(&std::thread::join));
+}
+```
 
 
 
