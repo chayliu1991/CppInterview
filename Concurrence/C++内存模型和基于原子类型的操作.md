@@ -407,6 +407,17 @@ strongly-happens-before 关系大多数情况下和 happens-before 一样，A st
 
 ## std::memory_order
 
+```
+typedef enum memory_order {
+    memory_order_relaxed, //@ 无同步或顺序限制，只保证当前操作原子性
+    memory_order_consume, //@ 标记读操作，依赖于该值的读写不能重排到此操作前
+    memory_order_acquire, //@ 标记读操作，之后的读写不能重排到此操作前
+    memory_order_release, //@ 标记写操作，之前的读写不能重排到此操作后
+    memory_order_acq_rel, //@ 仅标记读改写操作，读操作相当于acquire，写操作相当于release
+    memory_order_seq_cst //@ sequential consistency：顺序一致性不允许重排，所有原子操作的默认选项
+} memory_order;
+```
+
 
 
 
