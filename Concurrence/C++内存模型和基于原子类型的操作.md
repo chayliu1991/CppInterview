@@ -325,3 +325,99 @@ std::atomic<std::shared_ptr<int>> x; //@ C++20
 
 # 同步操作和强制排序
 
+两个线程分别读写数据，为了避免竞争，设置一个标记：
+
+```
+std::vector<int> g_data;
+std::atomic<bool> g_data_ready(false);
+
+void read_thread()
+{
+	while (!g_data_ready.load()) //@ step_1：happens-before 2
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	std::cout << g_data[0] << "\n"; //@ step_2
+}
+
+void write_thread()
+{
+	g_data.push_back(42); //@ step_3：happens-before 4
+	g_data_ready = true; //@ step_4：inter-thread happens-before 1
+}
+
+std::thread t1(read_thread);
+std::thread t2(write_thread);
+
+t1.join();
+t2.join();
+```
+
+`std::atomic<bool>` 上的操作要求强制排序，该顺序由内存模型关系 happens-before 和 synchronizes-with 提供：
+
+happens-before 保证了 step_1 在 step_2 之前发生，step_3 在 step_4 之前发生，而 step_1  要求 step_4 ，所以 step_4  在 step_1   之前发生，最终顺序确定为step_3->step_4->step_1->step_2：
+
+![](./img/happens_before.png)
+
+如果没有强制排序，CPU 可能会调整指令顺序，如果顺序是 step_4->step_1->step_2->step_3，读操作就会因为越界而出错。
+
+简单来说，如果线程 A 写入一个值，线程 B 读取该值，则 A synchronizes-with B。
+
+happens-before 和 strongly-happens-before 关系是程序操作顺序的基本构建块，它指定某个操作可以看到其他操作的结果。对单线程来说很简单，如果一个操作在另一个之前，就可以说前一个操作 happens-before 且 strongly-happens-before 后一个操作。
+
+- 前一条语句中的所有操作都 happens-before 下一条语句中的所有操作。
+- 如果操作发生在同一语句中，一般不存在 happens-before 关系，因为它们是无序的。当然这也有例外，比如逗号表达式。
+
+```
+void f(int x, int y)
+{
+    std::cout << x << y;
+}
+
+int g()
+{
+    static int i = 0;
+    return ++i;
+}
+
+int main()
+{
+    f(g(), g()); //@ 无序调用g，可能是21也可能是12
+    //@ 一般C++默认使用__cdecl调用模式，参数从右往左入栈，这里就是21
+}
+```
+
+如果一个线程中的操作 A happens-before 另一个线程中的操作 B，则A  inter-thread happens-before B。
+
+A inter-thread happens-before B 包括以下情况：
+
+- A synchronizes-with B
+- A dependency-ordered-before B
+- A inter-thread happens-before X，X inter-thread happens-before B
+- A sequenced-before X，X inter-thread happens-before B
+- A synchronizes-with X，X sequenced-before B
+
+strongly-happens-before 关系大多数情况下和 happens-before 一样，A strongly-happens-before B 包括以下情况：
+
+- A synchronizes-with B
+- A sequenced-before X，X inter-thread happens-before  B
+- A strongly-happens-before X，X strongly-happens-before B
+
+略微不同的是，inter-thread happens-before 关系可以用 memory_order_consume 标记，而 strongly-happens-before 不行。但大多数代码不应该使用 memory_order_consume，所以这点实际上影响不大。
+
+## std::memory_order
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
