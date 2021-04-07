@@ -188,7 +188,140 @@ int main()
 }
 ```
 
+## 其他原子类型
 
+### std::atomic_bool
 
+std::atomic_flag 功能过于局限，甚至无法像布尔类型一样使用，相比之下，`std::atomic<bool>` 更易用。但是 `std::atomic<bool>` 不保证 lock-free，可以用 is_lock_free 检验在当前平台上是否 lock-free。
 
+```
+std::atomic<bool> x(true);
+x = false;
+bool y = x.load(std::memory_order_acquire); //@ 读取x值返回给y
+x.store(true); //@ x写为true
+y = x.exchange(false, std::memory_order_acq_rel); //@ x用false替换，并返回旧值true给y
+
+bool expected = false; //@ 期望值
+/* 不等则将期望值设为x并返回false，相等则将x设为目标值true并返回true
+weak版本在相等时也可能替换失败而返回false，因此一般用于循环 */
+while (!x.compare_exchange_weak(expected, true) && !expected);
+```
+
+### 指针原子类型
+
+指针原子类型 `std::atomic<T*>` 也支持 is_lock_free、load、store、exchange、compare_exchange_weak 和 compare_exchange_strong，与 `std::atomic<bool>` 语义相同。此外指针原子类型还支持运算操作：fetch_add、fetch_sub、++、--、+=、-= 。
+
+```
+class A {};
+A a[5];
+std::atomic<A*> p(a); //@ p为&a[0]
+A* x = p.fetch_add(2); //@ p为&a[2]，并返回原始值a[0]
+assert(x == a);
+assert(p.load() == &a[2]);
+x = (p -= 1);  //@ p为&a[1]，并返回给x，相当于x = p.fetch_sub(1) - 1
+assert(x == &a[1]);
+assert(p.load() == &a[1]);
+```
+
+### 整型原子类型
+
+整型原子类型（如 `std::atomic<int>`）在上述操作之外，还支持 fetch_or、fetch_and、fetch_xor、=、&=、^=。
+
+```
+std::atomic<int> i(5);
+int j = i.fetch_and(3); //@ 101 & 011 = 001，i为1，j为5
+```
+
+### 自定义原子类型
+
+如果原子类型是自定义类型，该自定义类型必须可平凡复制（trivially copyable），也就意味着该类型不能有虚函数或虚基类。这可以用 is_trivially_copyable 检验。
+
+```
+#include <iostream>
+#include <type_traits>
+
+struct A {
+	int m;
+};
+
+struct B {
+	B(B const&) {}
+};
+
+struct C {
+	virtual void foo();
+};
+
+struct D {
+	int m;
+
+	D(D const&) = default; // -> trivially copyable
+	D(int x) : m(x + 1) {}
+};
+
+int main()
+{
+	std::cout << std::boolalpha;
+	std::cout << std::is_trivially_copyable<A>::value << '\n'; //@ true
+	std::cout << std::is_trivially_copyable<B>::value << '\n'; //@ false
+	std::cout << std::is_trivially_copyable<C>::value << '\n'; //@ false
+	std::cout << std::is_trivially_copyable<D>::value << '\n'; //@ true
+}
+```
+
+自定义类型的原子类型不允许运算操作，只允许 is_lock_free、load、store、exchange、compare_exchange_weak 和 compare_exchange_strong，以及赋值操作和向自定义类型转换的操作。
+
+## 通用的自由函数
+
+除了每个类型各自的成员函数，原子操作库还提供了通用的自由函数，只不过函数名多了一个 `atomic_` 前缀，参数变为指针类型：
+
+```
+std::atomic<int> i(42);
+int j = std::atomic_load(&i); //@ 等价于i.load()
+```
+
+compare_exchange_weak 和 compare_exchange_strong 的第一个参数是引用，因此 std::atomic_compare_exchange_weak 和 std::atomic_compare_exchange_strong 的参数用的是指针：
+
+```
+bool compare_exchange_weak(T& expected, T desired,
+	std::memory_order success,
+	std::memory_order failure);
+
+template<class T>
+bool atomic_compare_exchange_weak(std::atomic<T>* obj,
+	typename std::atomic<T>::value_type* expected,
+	typename std::atomic<T>::value_type desired);
+
+template<class T>
+bool atomic_compare_exchange_weak_explicit(std::atomic<T>* obj,
+	typename std::atomic<T>::value_type* expected,
+	typename std::atomic<T>::value_type desired,
+	std::memory_order succ,
+	std::memory_order fail);
+```
+
+除 std::atomic_is_lock_free 外，每个自由函数有一个 `_explicit` 后缀版本，`_explicit` 自由函数额外接受一个 std::memory_order 参数。
+
+```
+std::atomic<int> i(42);
+//@ i.load(std::memory_order_acquire) 
+std::atomic_load_explicit(&i, std::memory_order_acquire); 
+```
+
+自由函数不仅可用于原子类型，还为 std::shared_ptr 提供了特化版本：
+
+```
+std::shared_ptr<int> p(new int(42));
+std::shared_ptr<int> x = std::atomic_load(&p);
+std::shared_ptr<int> q;
+std::atomic_store(&q, p);
+```
+
+这个特化将在 C++20 中弃用，C++20直接允许 std::atomic 的模板参数为 std::shared_ptr：
+
+```
+std::atomic<std::shared_ptr<int>> x; //@ C++20
+```
+
+# 同步操作和强制排序
 
