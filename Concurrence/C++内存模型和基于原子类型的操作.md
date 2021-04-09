@@ -418,9 +418,369 @@ typedef enum memory_order {
 } memory_order;
 ```
 
+### Relaxed ordering
 
+标记为 memory_order_relaxed 的原子操作不是同步操作，不强制要求并发内存的访问顺序，只保证原子性和修改顺序一致性。
 
+```
+std::atomic<int> x = 0, y = 0;
+static int r1, r2;
 
+//@ 线程1
+void thr1Func()
+{
+	r1 = y.load(std::memory_order_relaxed); //@ step_1
+	x.store(r1, std::memory_order_relaxed); //@ step_2
+}
+
+//@ 线程2
+void thr2Func()
+{
+	r2 = x.load(std::memory_order_relaxed); //@ step_3 
+	y.store(42, std::memory_order_relaxed); //@ step_4
+}
+```
+
+可能执行顺序为 step_4->step_1->step_3->step_2，结果 `i == 42, j == 42`。
+
+Relaxed ordering  不允许循环依赖：
+
+```
+std::atomic<int> x = 0, y = 0;
+static int r1, r2;
+
+//@ 线程1
+void thr1Func()
+{
+	r1 = y.load(std::memory_order_relaxed); //@ step_1
+	if(r1 == 42)
+		x.store(r1, std::memory_order_relaxed); //@ step_2
+}
+
+//@ 线程2
+void thr2Func()
+{
+	r2 = x.load(std::memory_order_relaxed); //@ step_3
+	if(r2 == 42)
+		y.store(42, std::memory_order_relaxed); //@ step_4
+}
+```
+
+结果不允许为 `i == 42, j == 42`，因为要产生这个结果，step_1 依赖 step_4，step_4 依赖 step_3，step_3 依赖 step_2，step_2 依赖 step_1。
+
+典型使用场景是自增计数器，比如 std::shared_ptr 的引用计数器，它只要求原子性，不要求顺序和同步：
+
+```
+std::atomic<int> cnt = 0;
+void f()
+{
+	for (int i = 0; i < 100; ++i)
+	{
+		cnt.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+int main()
+{
+	std::vector<std::thread> v;
+	for (int i = 0; i < 100; ++i)
+		v.emplace_back(f);
+	std::for_each(v.begin(), v.end(), std::mem_fun_ref(&std::thread::join));
+	std::cout << cnt << "\n"; //@ 10000
+}
+```
+
+### Release-Consume ordering
+
+对于标记为 memory_order_consume 原子变量 x 的读操作 R，当前线程中依赖于 x  的读写不允许重排到 R 之前，其他线程中对依赖于 x 的变量写操作对当前线程可见。
+
+如果线程 A 对一个原子变量 x 的写操作为 memory_order_release，线程 B 对同一原子变量的读操作为 memory_order_consume，带来的副作用是，线程 A 中所有 dependency-ordered-before 该写操作的其他写操作（non-atomic 和 relaxed atomic），在线程 B 的其他依赖于该变量的读操作中可见。
+
+顺序的规范正在修订中，并且暂时不鼓励使用 memory_order_consume。
+
+典型使用场景是访问很少进行写操作的数据结构（比如路由表），以及以指针为中介的 publisher-subscriber 场景，即生产者发布一个指针给消费者访问信息，但生产者写入内存的其他内容不需要对消费者可见，这个场景的一个例子是 RCU（Read-Copy Update）。
+
+```
+std::atomic<int*> x;
+int i;
+
+void producer()
+{
+    int* p = new int(42);
+    i = 42;
+    x.store(p, std::memory_order_release);
+}
+
+void consumer()
+{
+    int* q;
+    while (!(q = x.load(std::memory_order_consume)));
+    assert(*q == 42); //@ 一定不出错：*q带有x的依赖
+    assert(i == 42); //@ 可能出错也可能不出错：i不依赖于x
+}
+
+int main()
+{
+    std::thread t1(producer);
+    std::thread t2(consumer);
+    t1.join();
+    t2.join();
+}
+```
+
+### Release-Acquire ordering
+
+对于标记为 memory_order_acquire 的读操作R，当前线程的其他读写操作不允许重排到R之前，其他线程中在同一原子变量上所有的写操作在当前线程可见。
+
+如果线程 A 对一个原子变量的写操作W为 memory_order_release，线程 B 对同一原子变量的读操作为 memory_order_acquire，带来的副作用是，线程 A 中所有 happens-before  W 的写操作（non-atomic 和 relaxed atomic）都在线程 B 中可见。
+
+典型使用场景是互斥锁，线程 A 的释放后被线程B获取，则 A 中释放锁之前发生在 critical section 的所有内容都在 B 中可见。
+
+```
+std::atomic<int*> x;
+int i;
+
+void producer()
+{
+	int* p = new int(42);
+	i = 42;
+	x.store(p, std::memory_order_release);
+}
+
+void consumer()
+{
+	int* q;
+	while (!(q = x.load(std::memory_order_acquire)));
+	assert(*q == 42); //@ 一定不出错
+	assert(i == 42); //@ 一定不出错
+}
+
+int main()
+{
+	std::thread t1(producer);
+	std::thread t2(consumer);
+	t1.join();
+	t2.join();
+
+	return 0;
+}
+```
+
+对于标记为 memory_order_release 的写操作 W，当前线程中的其他读写操作不允许重排到W之后，若其他线程 acquire 该原子变量，则当前线程所有 happens-before 的写操作在其他线程中可见，若其他线程 consume 该原子变量，则当前线程所有 dependency-ordered-before W 的其他写操作在其他线程中可见。
+
+对于标记为 memory_order_acq_rel 的读改写（read-modify-write）操作，相当于写操作是 memory_order_release，读操作是 memory_order_acquire，当前线程的读写不允许重排到这个写操作之前或之后，其他线程中 release 该原子变量的写操作在修改前可见，并且此修改对其他 acquire 该原子变量的线程可见：
+
+```
+std::atomic<bool> x = false;
+std::atomic<bool> y = false;
+std::atomic<int> z = 0;
+
+void write_x()
+{
+	x.store(true, std::memory_order_release); //@ step_1：happens-before 3（由于3的循环）
+}
+
+void write_y()
+{
+	y.store(true, std::memory_order_release); //@ step_2: happens-before 5（由于5的循环）
+}
+
+void read_x_then_y()
+{
+	while (!x.load(std::memory_order_acquire)); //@ step_3: happens-before 4
+	if (y.load(std::memory_order_acquire)) ++z; //@ step_4
+}
+
+void read_y_then_x()
+{
+	while (!y.load(std::memory_order_acquire)); //@ step_5: happens-before 6
+	if (x.load(std::memory_order_acquire)) ++z; //@ step_6
+}
+
+int main()
+{
+	std::thread t1(write_x);
+	std::thread t2(write_y);
+	std::thread t3(read_x_then_y);
+	std::thread t4(read_y_then_x);
+	t1.join();
+	t2.join();
+	t3.join();
+	t4.join();
+	assert(z.load() != 0); //@ z可能为0：134y为false 256x为false，但12之间没有关系
+}
+```
+
+为了使两个写操作有序，将其放到一个线程里：
+
+```
+std::atomic<bool> x = false;
+std::atomic<bool> y = false;
+std::atomic<int> z = 0;
+
+void write_x_then_y()
+{
+	x.store(true, std::memory_order_relaxed); //@ step_1：happens-before 2
+	y.store(true, std::memory_order_release); //@ step_2：happens-before 3（由于3的循环）
+}
+
+void read_y_then_x()
+{
+	while (!y.load(std::memory_order_acquire)); //@ step_3：happens-before 4
+	if (x.load(std::memory_order_relaxed)) ++z; //@ step_4
+}
+
+int main()
+{
+	std::thread t1(write_x_then_y);
+	std::thread t2(read_y_then_x);
+	t1.join();
+	t2.join();
+	assert(z.load() != 0); //@ z一定不为0：顺序一定为1234
+}
+```
+
+利用 Release-Acquire ordering 可以传递同步：
+
+```
+std::atomic<bool> x = false;
+std::atomic<bool> y = false;
+std::atomic<int> v[2];
+
+void f()
+{
+	//@ v[0]、v[1]的设置没有先后顺序，但都happens-before step_1
+	v[0].store(1, std::memory_order_relaxed);
+	v[1].store(2, std::memory_order_relaxed);
+	x.store(true, std::memory_order_release); //@ step_1：happens-before 2（由于2的循环）
+}
+
+void g()
+{
+	while (!x.load(std::memory_order_acquire)); //@ step_2：happens-before 3
+	y.store(true, std::memory_order_release); //@ step_3：happens-before 4（由于4的循环）
+}
+
+void h()
+{
+	while (!y.load(std::memory_order_acquire)); //@ step_4 happens-before v[0]、v[1]的读取
+	assert(v[0].load(std::memory_order_relaxed) == 1);
+	assert(v[1].load(std::memory_order_relaxed) == 2);
+}
+```
+
+### Sequentially-consistent ordering
+
+memory_order_seq_cst 是所有原子操作的默认选项（因此可以省略不写），对于标记为 memory_order_seq_cst 的操作，读操作相当于 memory_order_acquire，写操作相当于 memory_order_release，读改写操作相当于 memory_order_acq_rel`=，此外还附加一个单独的 total ordering，即所有线程对同一操作看到的顺序也是相同的。这是最简单直观的顺序，但由于要求全局的线程同步，因此也是开销最大的。
+
+```
+std::atomic<bool> x = false;
+std::atomic<bool> y = false;
+std::atomic<int> z = 0;
+
+//@ 要么1 happens-before 2，要么2 happens-before 1
+void write_x()
+{
+	x.store(true, std::memory_order_seq_cst); //@ step_1：happens-before 3（由于3的循环）
+}
+
+void write_y()
+{
+	y.store(true, std::memory_order_seq_cst); //@ step_2：happens-before 5（由于5的循环）
+}
+
+void read_x_then_y()
+{
+	while (!x.load(std::memory_order_seq_cst)); //@ step_3：happens-before 4
+	if (y.load(std::memory_order_seq_cst)) ++z; //@ step_4：如果返回false则一定是1 happens-before 2
+}
+
+void read_y_then_x()
+{
+	while (!y.load(std::memory_order_seq_cst)); //@ step_5：happens-before 6
+	if (x.load(std::memory_order_seq_cst)) ++z; //@ step_6：如果返回false则一定是2 happens-before 1
+}
+
+int main()
+{
+	std::thread t1(write_x);
+	std::thread t2(write_y);
+	std::thread t3(read_x_then_y);
+	std::thread t4(read_y_then_x);
+	t1.join();
+	t2.join();
+	t3.join();
+	t4.join();
+	assert(z.load() != 0); //@ z可能为1、2，一定不为0,12之间必定存在happens-before关系
+}
+```
+
+## std::atomic_thread_fence
+
+```
+std::atomic<bool> x, y;
+std::atomic<int> z;
+
+void f()
+{
+	x.store(true, std::memory_order_relaxed); //@ step_1：happens-before 2
+	std::atomic_thread_fence(std::memory_order_release); //@ step_2：synchronizes-with 3
+	y.store(true, std::memory_order_relaxed);
+}
+
+void g()
+{
+	while (!y.load(std::memory_order_relaxed));
+	std::atomic_thread_fence(std::memory_order_acquire); //@ step_3：happens-before 4
+	if (x.load(std::memory_order_relaxed)) ++z; //@ step_4
+}
+
+int main()
+{
+	x = false;
+	y = false;
+	z = 0;
+	std::thread t1(f);
+	std::thread t2(g);
+	t1.join();
+	t2.join();
+	assert(z.load() != 0); //@ step_1 happens-before 4
+}
+```
+
+将 x 替换为非原子 bool 类型，行为也一样：
+
+```
+bool x = false;
+std::atomic<bool> y;
+std::atomic<int> z;
+
+void f()
+{
+	x = true; //@ step_1：happens-before 2
+	std::atomic_thread_fence(std::memory_order_release); //@ step_2：synchronizes-with 3
+	y.store(true, std::memory_order_relaxed);
+}
+
+void g()
+{
+	while (!y.load(std::memory_order_relaxed));
+	std::atomic_thread_fence(std::memory_order_acquire); //@ step_3：happens-before 4
+	if (x) ++z; //@ step_4
+}
+
+int main()
+{
+	x = false;
+	y = false;
+	z = 0;
+	std::thread t1(f);
+	std::thread t2(g);
+	t1.join();
+	t2.join();
+	assert(z.load() != 0); //@ 1 happens-before 4
+}
+```
 
 
 
