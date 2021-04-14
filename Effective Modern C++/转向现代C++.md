@@ -271,6 +271,283 @@ template<typename T>
 constexpr bool is_same_v = is_same<T, U>::value;
 ```
 
+# 用 enum class 替代 enum
+
+一般在大括号中声明的名称，只在大括号的作用域内可见，但这对  enum 成员例外。enum 成员属于 enum 所在的作用域，因此作用域内不能出现同名实例。
+
+```
+enum X { a, b, c };
+int a = 1; //@ 错误：a已在作用域内声明过
+```
+
+C++11 引入了限定作用域的枚举类型，用 enum class 关键字表示：
+
+```
+enum class X { a, b, c };
+int a = 1; //@ OK
+X x = X::a; //@ OK
+X y = b; //@ 错误
+```
+
+enum class`的另一个优势是不会进行隐式转换：
+
+```
+enum X { a, b, c };
+X x = a;
+if (x < 3.14) ... //@ 不应该将枚举与浮点数进行比较，但这里合法
+
+enum class Y { a, b, c };
+Y y = Y::a;
+if (x < 3.14) ... //@ 报错：不允许比较
+//@ 但enum class允许强制转换为其他类型
+if (static_cast<double>(x) < 3.14) ... //@ OK
+```
+
+C++11 之前的 enum 不允许前置声明，而 C++11 的 enum 和 enum class 都可以前置声明：
+
+ ```
+enum Color; //@ C++11之前错误
+enum class X; //@ OK
+ ```
+
+C++11 之前不能前置声明 enum 的原因是编译器为了节省内存，要在 enum  被使用前选择一个足够容纳成员取值的最小整型作为底层类型。
+
+```
+enum X { a, b, c }; //@ 编译器选择底层类型为char
+enum Status { //@ 编译器选择比char更大的底层类型
+    good = 0,
+    failed = 1,
+    incomplete = 100,
+    corrupt = 200,
+    indeterminate = 0xFFFFFFFF
+};
+```
+
+不能前置声明的一个弊端是，由于编译依赖关系，在 enum 中仅仅添加一个成员可能就要重新编译整个系统。如果在头文件中包含前置声明，修改 enum class 的定义时就不需要重新编译整个系统，如果 enum class 的修改不影响函数的行为，则函数的实现也不需要重新编译。
+
+C++11 支持前置声明的原因很简单，底层类型是已知的，用 std::underlying_type 即可获取。也可以指定枚举的底层类型，如果不指定，enum class 默认为  int，enum  则不存在默认类型。
+
+```
+enum class X : std::uint32_t;
+//@ 也可以在定义中指定
+enum class Y : std::uint32_t { a, b, c };
+```
+
+C++11 中使用 enum 更方便的场景只有一种，即希望用到 enum 的隐式转换时：
+
+```
+enum X { name, age, number };
+auto t = std::make_tuple("downdemo", 6, "13312345678");
+auto x = std::get<name>(t); //@ get的模板参数类型是std::size_t，name可隐式转换为std::size_t
+```
+
+如果用 enum class，则需要强制转换：
+
+```
+enum class X { name, age, number };
+auto t = std::make_tuple("downdemo", 6, "13312345678");
+auto x = std::get<static_cast<std::size_t>(X::name)>(t);
+```
+
+可以用一个函数来封装转换的过程，但也不会简化多少：
+
+```
+template<typename E>
+constexpr auto f(E e) noexcept
+{
+	return static_cast<std::underlying_type_t<E>>(e);
+}
+
+auto x = std::get<f(X::name)>(t);
+```
+
+# 用 =delete 替代 private 作用域来禁用函数
+
+C++11 之前禁用拷贝的方式是将拷贝构造函数和拷贝赋值运算符声明在 private 作用域中，并且不给予具体的实现：
+
+```
+class A {
+private:
+    A(const A&); // 不需要定义
+    A& operator=(const A&);
+};
+```
+
+C++11 中可以直接将要删除的函数用 =delete 声明，习惯上会声明在 public 作用域中，这样在使用删除的函数时，会先检查访问权再检查删除状态，出错时能得到更明确的诊断信息。
+
+```
+class A {
+public:
+    A(const A&) = delete;
+    A& operator(const A&) = delete;
+};
+```
+
+private 作用域中的函数还可以被成员和友元调用，而 =delete 是真正禁用了函数，无法通过任何方法调用。
+
+任何函数都可以用 =delete 声明，比如函数不想接受某种类型的参数，就可以删除对应类型的重载。
+
+```
+void f(int);
+void f(double) = delete; //@ 拒绝double和float类型参数
+f(3.14); //@ 错误
+```
+
+=delete 还可以禁止模板对某个类型的实例化：
+
+```
+template<typename T>
+void f(T x) {}
+
+template<>
+void f<int>(int) = delete;
+
+f(1); //@ 错误：使用已删除的函数
+template<typename T>
+void processPointer(T * ptr);
+```
+
+类内的函数模板也可以用这种方式禁用：
+
+```
+class A {
+public:
+template<typename T>
+	void f(T x) {}
+};
+
+template<>
+void A::f<int>(int) = delete;
+```
+
+当然，写在 private 作用域也可以起到禁用的效果：
+
+```
+class A {
+public:
+    template<typename T>
+    void f(T x) {}
+private:
+    template<>
+    void f<int>(int);
+};
+```
+
+但把模板和特化置于不同的作用域不太合逻辑，与其效仿 =delete 的效果，不如直接用 =delete。
+
+# 用 override 标记被重写的虚函数
+
+虚函数的重写很容易出错，因为要在派生类中重写虚函数，必须满足一系列要求：
+
+- 基类中必须有此虚函数
+- 基类和派生类的函数名相同（析构函数除外）
+- 函数参数类型相同
+- const 属性相同
+- 函数返回值和异常说明相同
+
+C++11 多出一条要求：引用修饰符相同。引用修饰符的作用是，指定成员函数仅在对象为左值（成员函数标记为 &）或右值（成员函数标记为 &&）时可用：
+
+```
+class A {
+public:
+    void f()& { std::cout << 1 << "\n"; } //@ *this是左值时才使用
+    void f()&& { std::cout << 2 << "\n"; } //@ *this是右值时才使用
+};
+
+A makeA() { return A{}; }
+
+A a;
+a.f(); //@ 1
+makeA().f(); //@ 2
+```
+
+对于这么多的要求难以面面俱到，比如下面代码没有任何重写但可以通过编译：
+
+```
+class A {
+public:
+    virtual void f1() const;
+    virtual void f2(int x);
+    virtual void f3() &;
+    void f4() const;
+};
+
+class B : public A {
+public:
+    virtual void f1();
+    virtual void f2(unsigned int x);
+    virtual void f3() &&;
+    void f4() const;
+};
+```
+
+为了保证正确性，C++11 提供了 override 来标记要重写的虚函数，如果未重写就不能通过编译：
+
+```
+class A {
+public:
+    virtual void f1() const;
+    virtual void f2(int x);
+    virtual void f3() &;
+    virtual void f4() const;
+};
+
+class B : public A {
+public:
+    virtual void f1() const override;
+    virtual void f2(int x) override;
+    virtual void f3() & override;
+    void f4() const override;
+};
+```
+
+override 是一个 contextual keyword，只在特殊语境中保留，override 只有出现在成员函数声明末尾才有保留意义，因此如果以前的遗留代码用到了 override 作为名字，不用改名就可以升到 C++11。
+
+```
+class A {
+public:
+	void override(); //@ 在C++98和C++11中都合法
+};
+```
+
+C++11 还提供了另一个 contextual keyword：final 可以用来指定虚函数禁止被重写：
+
+```
+class A {
+public:
+    virtual void f() final;
+    void g() final; //@ 错误：final只能用于指定虚函数
+};
+
+class B : public A {
+public:
+    virtual void f() override; //@ 错误：f不可重写
+};
+```
+
+final 还可以用于指定某个类禁止被继承：
+
+```
+class A final {};
+class B : public A {}; //@ 错误：A禁止被继承
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
