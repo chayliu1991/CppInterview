@@ -68,7 +68,7 @@ A a3;
 B b3((std::string(s)));
 ```
 
-大括号初始化的缺陷在于，只要类型转换后可以匹配，大括号初始化总会优先匹配参数类型为 [std::initializer_list](https://en.cppreference.com/w/cpp/utility/initializer_list) 的构造函数，即使收缩转换会导致调用错误。
+大括号初始化的缺陷在于，只要类型转换后可以匹配，大括号初始化总会优先匹配参数类型为 std::initializer_list 的构造函数，即使收缩转换会导致调用错误。
 
 ```
 class A {
@@ -83,7 +83,7 @@ A b{ 3.14 }; //@ 错误：大括号初始化不允许double到int的收缩转换
 A c{ "hi" }; //@ 2
 ```
 
-但特殊的是，参数为空的大括号初始化只会调用默认构造函数。如果想传入真正的空 [std::initializer_list](https://en.cppreference.com/w/cpp/utility/initializer_list) 作为参数，则要额外添加一层大括号或小括号。
+但特殊的是，参数为空的大括号初始化只会调用默认构造函数。如果想传入真正的空 std::initializer_list 作为参数，则要额外添加一层大括号或小括号。
 
 ```
 class A {
@@ -96,7 +96,7 @@ A b{ {} }; //@ 2
 A c({}); //@ 2
 ```
 
-上述问题带来的实际影响很大，比如 [std::vector](https://en.cppreference.com/w/cpp/container/vector) 就存在参数为参数 [std::initializer_list](https://en.cppreference.com/w/cpp/utility/initializer_list) 的构造函数，这导致了参数相同时，大括号初始化和小括号初始化调用的却是不同版本的构造函数：
+上述问题带来的实际影响很大，比如 std::vector 就存在参数为参数 std::initializer_list 的构造函数，这导致了参数相同时，大括号初始化和小括号初始化调用的却是不同版本的构造函数：
 
 ```
 std::vector<int> v1(3, 6); //@ 元素为3个6
@@ -125,12 +125,153 @@ auto v1 = f<std::vector<int>>(3, 6); //@ v1元素为6、6、6
 auto v2 = g<std::vector<int>>(3, 6); //@ v2元素为3、6
 ```
 
-[std::make_shared ](https://en.cppreference.com/w/cpp/memory/shared_ptr/make_shared) 和 [std::make_unique](https://en.cppreference.com/w/cpp/memory/unique_ptr/make_unique)就面临了这个问题，而它们的选择是使用小括号初始化并在接口文档中写明这点：
+std::make_shared 和 std::make_unique 就面临了这个问题，而它们的选择是使用小括号初始化并在接口文档中写明这点：
 
 ```
 auto p = std::make_shared<std::vector<int>>(3, 6);
 for (auto x : *p) std::cout << x; //@ 666
 ```
+
+# 用 nullptr 替代 0 和 NULL
+
+字面值0本质是 int 而非指针，只有在使用指针的语境中发现 0 才会解释为空指针。
+
+NULL 的本质是宏，没有规定的实现标准，一般在 C++ 中定义为 0，在 C 中定义为 void*。
+
+```
+//@ VS2017中的定义
+#ifndef NULL
+#ifdef __cplusplus
+#define NULL 0
+#else
+#define NULL ((void *)0)
+#endif
+#endif
+```
+
+在重载解析时，NULL 作为参数不会优先匹配指针类型。而 nullptr 的类型是 std::nullptr_t，std::nullptr_t 可以转换为任何原始指针类型。
+
+```
+void f(bool) { std::cout << 1 << "\n"; }
+void f(int) { std::cout << 2 << "\n"; }
+void f(void*) { std::cout << 3 << "\n"; }
+f(0); //@ 2
+f(NULL); //@ 2
+f(nullptr); //@ 3
+```
+
+这点也会影响模板实参推断：
+
+```
+template<typename T>
+void f() {}
+
+f(0); //@ T推断为int
+f(NULL); //@ T推断为int
+f(nullptr); //@ T推断为std::nullptr_t
+```
+
+使用 nullptr 就可以避免推断出非指针类型：
+
+ ```
+void f1(std::shared_ptr<int>) {}
+void f2(std::unique_ptr<int>) {}
+void f3(int*) {}
+
+template<typename F, tpyename T>
+void g(F f, T x)
+{
+	f(x);
+}
+
+g(f1, 0); //@ 错误
+g(f1, NULL); //@ 错误
+g(f1, nullptr); //@ OK
+
+g(f2, 0); //@ 错误
+g(f2, NULL); //@ 错误
+g(f2, nullptr); //@ OK
+
+g(f3, 0); //@ 错误
+g(f3, NULL); //@ 错误
+g(f3, nullptr); //@ OK
+ ```
+
+使用 nullptr  也能使代码意图更清晰：
+
+```
+auto res = f();
+if (res == nullptr) ... //@ 很容易看出res是指针类型
+```
+
+# 用 using 别名声明替代 typedef
+
+using 别名声明比 typedef 可读性更好，尤其是对于函数指针类型：
+
+```
+typedef void (*F)(int);
+using F = void (*)(int);
+```
+
+C++11 还引入了模板别名，它只能使用 using 别名声明：
+
+```
+template<typename T>
+using X = std::vector<T>; //@ X<int>等价于std::vector<int>
+
+//@ C++11之前的做法是在模板内部typedef
+template<typename T>
+struct Y { //@ Y<int>::type等价于std::vector<int>
+	typedef std::vector<T> type;
+};
+
+//@ 在其他类模板中使用这两个别名的方式
+template<typename T>
+class A {
+	X<T> x;
+	typename Y<T>::type y;
+};
+```
+
+C++11 引入了 type traits，为了方便使用，C++14 为每个 type traits 都定义了模板别名：
+
+```
+//@ std::remove_reference的实现
+template<typename T>
+struct remove_reference {
+	using type = T;
+};
+
+template<typename T>
+struct remove_reference<T&> {
+	using type = T;
+};
+
+template<typename T>
+struct remove_reference<T&&> {
+	using type = T;
+};
+
+//@ std::remove_reference_t的实现
+template<typename T>
+using remove_reference_t = typename remove_reference<T>::type;
+```
+
+为了简化生成值的 type traits，C++14 还引入了模板变量：
+
+```
+//@ std::is_same的实现
+template<typename T, typename U>
+struct is_same {
+	static constexpr bool value = false;
+};
+
+//@ std::is_same_v的实现
+template<typename T>
+constexpr bool is_same_v = is_same<T, U>::value;
+```
+
+
 
 
 
