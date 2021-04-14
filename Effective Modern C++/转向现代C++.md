@@ -532,6 +532,295 @@ class A final {};
 class B : public A {}; //@ 错误：A禁止被继承
 ```
 
+# 用 std::cbegin 和 std::cend 获取 const_iterator
+
+需要迭代器但不修改值时就应该使用 const_iterator，获取和使用 const_iterator 十分简单：
+
+```
+std::vector<int> v{ 2, 3 };
+auto it = std::find(std::cbegin(v), std::cend(v), 2); //@ C++14
+v.insert(it, 1);
+```
+
+上述功能很容易扩展成模板：
+
+```
+template<typename C, typename T>
+void f(C& c, const T& x, const T& y)
+{
+    auto it = std::find(std::cbegin(c), std::cend(c), x);
+    c.insert(it, y);
+}
+```
+
+# 用 noexcept 标记不抛异常的函数
+
+C++98 中，必须指出一个函数可能抛出的所有异常类型，如果函数有所改动则 exception specification 也要修改，而这可能破坏代码，因为调用者可能依赖于原本的 exception specification，所以 C++98 中的 exception specification 被认为不值得使用。
+
+C++11 中达成了一个共识，真正需要关心的是函数会不会抛出异常。一个函数要么可能抛出异常，要么绝对不抛异常，这种 maybe-or-never 形成了 C++11 exception specification 的基础，C++98 的 exception specification 在 C++17 移除。
+
+函数是否要加上 noexcept 声明与接口设计相关，调用者可以查询函数的 noexcept 状态，查询结果将影响代码的异常安全性和执行效率。因此函数是否要声明为 noexcept 就和成员函数是否要声明为 const 一样重要，如果一个函数不抛异常却不为其声明 noexcept，这就是接口规范缺陷。
+
+noexcept 的一个额外优点是，它可以让编译器生成更好的目标代码。为了理解原因只需要考虑 C++98 和 C++11 表达函数不抛异常的区别。
+
+```
+int f(int x) throw(); //@ C++98
+int f(int x) noexcept; //@ C++11
+```
+
+如果一个异常在运行期逃出函数，则 exception specification 被违反。在 C++98 中，调用栈会展开到函数调用者，执行一些无关的动作后中止程序。C++11 的一个微小区别是是，在程序中止前只是可能展开栈。这一点微小的区别将对代码生成造成巨大的影响。
+
+noexcept 声明的函数中，如果异常传出函数，优化器不需要保持栈在运行期的展开状态，也不需要在异常逃出时，保证其中所有的对象按构造顺序的逆序析构。而声明为 throw() 的函数就没有这样的优化灵活性。总结起来就是：
+
+```
+RetType function(params) noexcept; //@ most optimizable
+RetType function(params) throw(); //@ less optimizable
+RetType function(params); //@ less optimizable
+```
+
+这个理由已经足够支持给任何已知不会抛异常的函数加上 noexcept，比如移动操作就是典型的不抛异常函数。
+
+std::vector::push_back 在容器空间不够容纳元素时，会扩展新的内存块，再把元素转移到新的内存块。C++98 的做法是逐个拷贝，然后析构旧内存的对象，这使得 push_back 提供强异常安全保证：如果拷贝元素的过程中抛出异常，则 std::vector 保持原样，因为旧内存元素还未被析构。
+
+std::vector::push_back 在 C++11 中的优化是把拷贝替换成移动，但为了不违反强异常安全保证，只有确保元素的移动操作不抛异常时才会用移动替代拷贝。
+
+swap 函数是需要 noexcept 声明的另一个例子，不过标准库的 swap 用 noexcept 操作符的结果决定。
+
+```
+//@ 数组的swap
+template <class T, size_t N>
+void swap(T(&a)[N], T(&b)[N]) noexcept(noexcept(swap(*a, *b))); //@ 由元素类型决定noexcept结果
+//@ 比如元素类型是class A，如果swap(A, A)不抛异常则该数组的swap也不抛异常
+
+// std::pair的swap
+template <class T1, class T2>
+struct pair {
+    …
+        void swap(pair& p) noexcept(noexcept(swap(first, p.first)) &&
+            noexcept(swap(second, p.second)));
+    …
+};
+```
+
+虽然 noexcept 有优化的好处，但将函数声明为 noexcept 的前提是，保证函数长期具有 noexcept 性质，如果之后随意移除 noexcept 声明，就有破坏客户代码的风险。
+
+大多数函数是异常中立的，它们本身不抛异常，但它们调用的函数可能抛异常，这样它们就允许抛出的异常传到调用栈的更深一层，因此异常中立函数天生永远不具备 noexcept 性质。
+
+如果为了强行加上 noexcept 而修改实现就是本末倒置，比如调用一个会抛异常的函数是最简单的实现，为了不抛异常而环环相扣地来隐藏这点（比如捕获所有异常，将其替换成状态码或特殊返回值），大大增加了理解和维护的难度，并且这些复杂性的时间成本可能超过 noexcept 带来的优化。
+
+对某些函数来说，noexcept 性质十分重要，内存释放函数和所有的析构函数都隐式 noexcept，这样就不必加 noexcept声明。析构函数唯一未隐式 noexcept  的情况是，类中有数据成员的类型显式将析构函数声明 noexcept(false)。但这样的析构函数很少见，标准库中一个也没有。
+
+有些库的接口设计者会把函数区分为 wide contract 和 `narrow contract：
+
+- wide contrac， 函数没有前置条件，不用关心程序状态，对传入的实参没有限制，一定不会有未定义行为，如果知道不会抛异常就可以加上 noexcept。
+- narrow contract， 函数有前置条件，如果条件被违反则结果未定义。但函数没有义务校验这个前置条件，它断言前置条件一定满足（调用者负责保证断言成立），因此加上 `noexcept` 声明也是合理的。
+
+```
+//@ 假设前置条件是s.length(//@ <= 32
+void f(const std::string& s)//@ noexcept;
+```
+
+但如果想在违反前置条件时抛出异常，由于函数的 noexcept 声明，异常就会导致程序中止，因此一般只为 wide contract 函数声明 noexcept
+
+在 noexcept 函数中调用可能抛异常的函数时，编译器不会帮忙给出警告：
+
+```
+void start();
+void finish();
+void f() noexcept
+{
+    start();
+    … //@ do the actual work
+    finish();
+}
+```
+
+带 noexcept 声明的函数调用了不带 noexcept 声明的函数，这看起来自相矛盾，但也许被调用的函数在文档中写明了不会抛异常，也许它们来自 C 语言的库，也许来自还没来得及根据 C++11 标准做修订的 C++98 库。
+
+# 用 constexpr 表示编译期常量
+
+constexpr 用于对象时就是一个加强版的 const，表面上看 constexpr 表示值是 const，且在编译期（严格来说是翻译期，包括编译和链接，如果不是编译器或链接器作者，无需关心这点区别）已知，但用于函数则有不同的意义。
+
+编译期已知的值可能被放进只读内存，这对嵌入式开发是一个很重要的语法特性。
+
+ ```
+int i = 42;
+constexpr auto j = i; //@ 错误：i的值在编译期未知
+std::array<int, i> v1; //@ 错误：同上
+constexpr auto n = 10; //@ OK：10是一个编译期常量
+std::array<int, n> v2; //@ OK：n的值是在编译期已知
+ ```
+
+constexpr 函数在调用时若传入的是编译期常量，则产出编译期常量，传入运行期才知道的值，则产出运行期值。constexpr 函数可以满足所有需求，因此不必为了有非编译期值的情况而写两个函数。
+
+```
+constexpr int pow(int base, int exp) noexcept
+{
+    … //@ 实现见后
+}
+
+constexpr auto n = 5;
+std::array<int, pow(3, n)> results; //@ pow(3, n)在编译期计算出结果
+```
+
+上面的 constexpr 并不表示函数要返回 const 值，而是表示，如果参数都是编译期常量，则返回结果就可以当编译期常量使用，如果有一个不是编译期常量，返回值就在运行期计算。
+
+```
+auto base = 3; //@ 运行期获取值
+auto exp = 10; //@ 运行期获取值
+auto baseToExp = pow(base, exp); //@ pow在运行期被调用
+```
+
+C++11 中，constexpr 函数只能包含一条语句，即一条 return 语句。有两个应对限制的技巧：用条件运算符 ` ?: ` 替代 if-else、用递归替代循环。
+
+```
+constexpr int pow(int base, int exp) noexcept
+{
+    return (exp == 0 ? 1 : base * pow(base, exp - 1));
+}
+```
+
+C++14 解除了此限制：
+
+```
+//@ C++14
+constexpr int pow(int base, int exp) noexcept
+{
+    auto result = 1;
+    for (int i = 0; i < exp; ++i) 
+    result *= base;
+    return result;
+}
+```
+
+constexpr 函数必须传入和返回 literal type。constexpr 构造函数可以让自定义类型也成为 literal type 。
+
+```
+class Point {
+public:
+    constexpr Point(double xVal = 0, double yVal = 0) noexcept
+    : x(xVal), y(yVal) {}
+    constexpr double xValue() const noexcept { return x; }
+    constexpr double yValue() const noexcept { return y; }
+    void setX(double newX) noexcept { x = newX; } //@ 修改了对象所以不能声明为constexpr
+    void setY(double newY) noexcept { y = newY; } //@ 另外C++11中constexpr函数返回类型不能是void
+private:
+    double x, y;
+};
+
+constexpr Point p1(9.4, 27.7); //@ 编译期执行constexpr构造函数
+constexpr Point p2(28.8, 5.3); //@ 同上
+
+//@ 通过constexpr Point对象调用xValue和yValue也会在编译期获取值
+//@ 于是可以再写出一个新的constexpr函数
+constexpr Point midpoint(const Point& p1, const Point& p2) noexcept
+{
+    return { (p1.xValue() + p2.xValue()) / 2, (p1.yValue() + p2.yValue()) / 2 };
+}
+constexpr auto mid = midpoint(p1, p2); //@ mid在编译期创建
+```
+
+因为 `mid` 是编译期已知值，这就意味着如下表达式可以用于模板形参：
+
+```
+mid.xValue()*10
+//@ 因为上式是浮点型，浮点型不能用于模板实例化，因此还要如下转换一次
+static_cast<int>(mid.xValue()*10)
+```
+
+C++14 允许对值进行了修改或无返回值的函数声明为 `constexpr`：
+
+```
+//@ C++14
+class Point {
+public:
+    constexpr Point(double xVal = 0, double yVal = 0) noexcept
+    : x(xVal), y(yVal) {}
+    constexpr double xValue() const noexcept { return x; }
+    constexpr double yValue() const noexcept { return y; }
+    constexpr void setX(double newX) noexcept { x = newX; }
+    constexpr void setY(double newY) noexcept { y = newY; }
+private:
+    double x, y;
+};
+
+//@ 于是C++14允许写出下面的代码
+constexpr Point reflection(const Point& p) noexcept //@ 返回p关于原点的对称点
+{
+    Point res;
+    res.setX(-p.xValue());
+    res.setY(-p.yValue());
+    return res;
+}
+
+constexpr Point p1(9.4, 27.7);
+constexpr Point p2(28.8, 5.3);
+constexpr auto mid = midpoint(p1, p2);
+constexpr auto reflectedMid = reflection(mid); //@ 值为(-19.1, -16.5)，且在编译期已知
+```
+
+使用 `constexpr` 的前提是必须长期保证需要它，因为如果后续要删除 `constexpr` 可能会导致许多错误。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
