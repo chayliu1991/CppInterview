@@ -720,7 +720,7 @@ constexpr Point midpoint(const Point& p1, const Point& p2) noexcept
 constexpr auto mid = midpoint(p1, p2); //@ mid在编译期创建
 ```
 
-因为 `mid` 是编译期已知值，这就意味着如下表达式可以用于模板形参：
+因为 mid 是编译期已知值，这就意味着如下表达式可以用于模板形参：
 
 ```
 mid.xValue()*10
@@ -728,7 +728,7 @@ mid.xValue()*10
 static_cast<int>(mid.xValue()*10)
 ```
 
-C++14 允许对值进行了修改或无返回值的函数声明为 `constexpr`：
+C++14 允许对值进行了修改或无返回值的函数声明为 constexpr：
 
 ```
 //@ C++14
@@ -759,7 +759,254 @@ constexpr auto mid = midpoint(p1, p2);
 constexpr auto reflectedMid = reflection(mid); //@ 值为(-19.1, -16.5)，且在编译期已知
 ```
 
-使用 `constexpr` 的前提是必须长期保证需要它，因为如果后续要删除 `constexpr` 可能会导致许多错误。
+使用 constexpr 的前提是必须长期保证需要它，因为如果后续要删除 constexpr 可能会导致许多错误。
+
+# 用 std::mutex 或 std::atomic 保证 const 成员函数线程安全
+
+假设有一个表示多项式的类，它包含一个返回根的 const 成员函数：
+
+```
+class Polynomial {
+public:
+    std::vector<double> roots() const
+    { //@ 实际仍需要修改值，所以将要修改的成员声明为mutable
+        if (!rootsAreValid)
+        {
+            … //@ 计算根
+            rootsAreValid = true;
+        }
+        return rootVals;
+    }
+private:
+    mutable bool rootsAreValid{ false };
+    mutable std::vector<double> rootVals{};
+};
+```
+
+假如此时有两个线程对同一个对象调用成员函数，虽然函数声明为 const，但由于函数内部修改了数据成员，就可能产生数据竞争。最简单的解决方法是引入一个 std::mutex：
+
+```
+class Polynomial {
+public:
+    std::vector<double> roots() const
+    {
+        std::lock_guard<std::mutex> l(m);
+        if (!rootsAreValid)
+        {
+            … //@ 计算根
+            rootsAreValid = true;
+        }
+        return rootVals;
+    }
+private:
+    mutable std::mutex m; //@ std::mutex是move-only类型，因此这个类只能移动不能拷贝
+    mutable bool rootsAreValid{ false };
+    mutable std::vector<double> rootVals{};
+};
+```
+
+对一些简单的情况，使用原子变量 std::atomic 可能开销更低（取决于机器及 std::mutex 的实现）：
+
+```
+class Point {
+public:
+    double distanceFromOrigin() const noexcept
+    {
+        ++callCount; //@ 计算调用次数
+        return std::sqrt((x * x) + (y * y));
+    }
+private:
+    mutable std::atomic<unsigned> callCount{ 0 }; //@ std::atomic也是move-only类型
+    double x, y;
+};
+```
+
+因为 std::atomic  的开销比较低，很容易想当然地用多个原子变量来同步：
+
+```
+class A {
+public:
+    int f() const
+    {
+        if (flag) 
+        	return res;
+        else
+        {
+            auto x = expensiveComputation1();
+            auto y = expensiveComputation2();
+            res = x + y;
+            flag = true; //@ 设置标记
+            return res;
+        }
+    }
+private:
+    mutable std::atomic<bool> flag{ false };
+    mutable std::atomic<int> res;
+};
+```
+
+这样做可行，但如果多个线程同时观察到标记值为 false，每个线程都要继续进行运算，这个标记反而没起到作用。先设置标记再计算可以消除这个问题，但会引起一个更大的问题：
+
+````
+class A {
+public:
+    int f() const
+    {
+        if (flag) 
+        	return res;
+        else
+        {
+            flag = true; //@ 在计算前设置标记值为true
+            auto x = expensiveComputation1();
+            auto y = expensiveComputation2();
+            res = x + y;
+            return res;
+        }
+    }
+private:
+    mutable std::atomic<bool> flag{ false };
+    mutable std::atomic<int> res;
+};
+````
+
+假如线程1刚设置好标记，线程2此时正好检查到标记值为 true 并直接返回数据值，然后线程1接着计算结果，这样线程2的返回值就是错的。
+
+因此如果要同步多个变量或内存区，最好还是使用 std::mutex。
+
+```
+class A {
+public:
+    int f() const
+    {
+        std::lock_guard<std::mutex> l(m);
+        if (flag) return res;
+        else
+        {
+            auto x = expensiveComputation1();
+            auto y = expensiveComputation2();
+            res = x + y;
+            flag = true;
+            return res;
+        }
+    }
+private:
+    mutable std::mutex m;
+    mutable bool flag{ false };
+    mutable int res;
+};
+```
+
+# 特殊成员函数的隐式合成与抑制机制
+
+C++11 中的特殊成员函数多了两个：移动构造函数和移动赋值运算符。
+
+```
+class A {
+public:
+    A(A&& rhs); //@ 移动构造函数
+    A& operator=(A&& rhs); //@ 移动赋值运算符
+};
+```
+
+移动操作同样会在需要时生成，执行的是对 non-static 成员的移动操作，另外它们也会对基类部分执行移动操作。
+
+移动操作并不确保真正移动，其核心是把 std::move 用于每个要移动的对象，根据返回值的重载解析决定执行移动还是拷贝。因此按成员移动分为两部分：
+
+- 对支持移动操作的类型进行移动。
+- 对不可移动的类型执行拷贝。
+
+规则：
+
+- 两种拷贝操作（拷贝构造函数和拷贝赋值运算符）是独立的，声明其中一个不会阻止编译器生成另一个。两种移动操作是不独立的，声明其中一个将阻止编译器生成另一个。理由是如果声明了移动构造函数，可能意味着实现上与编译器默认按成员移动的移动构造函数有所不同，从而可以推断移动赋值操作也应该与默认行为不同。
+- 显式声明拷贝操作（即使声明为 =delete）会阻止自动生成移动操作（但声明为 =default 不阻止生成）。理由类似上条，声明拷贝操作可能意味着默认的拷贝方式不适用，从而推断移动操作也应该会默认行为不同。反之亦然，声明移动操作也会阻止生成拷贝操作。
+- C++11 规定，显式声明析构函数会阻止生成移动操作。这个规定源于 Rule of Three，即两种拷贝函数和析构函数应该一起声明。这个规则的推论是，如果声明了析构函数，则说明默认的拷贝操作也不适用，但 C++98 中没有重视这个推论，因此仍可以生成拷贝操作，而在 C++11 中为了保持不破坏遗留代码，保留了这个规则。由于析构函数和拷贝操作需要一起声明，加上声明了拷贝操作会阻止生成移动操作，于是 C++11 就有了这条规定。
+- 生成移动操作的条件必须满足：该类没有用户声明的拷贝、移动、析构中的任何一个函数。总有一天这个规则会扩展到拷贝操作，因为 C++11 规定存在拷贝操作或析构函数时，仍能生成拷贝操作是被废弃的行为。C++11 提供了 =default 来表示使用默认行为，而不抑制生成其他函数。
+
+这种手法对于多态基类很有用，多态基类一般会有虚析构函数，虚析构函数的默认实现一般是正确的，为了使用默认行为而不阻止生成移动操作，则应该使用 =default，同理，如果要使用默认的移动操作而不阻止生成拷贝操作，则应该给移动操作加上 =default。
+
+````
+class A {
+public:
+    virtual ~A() = default;
+    A(A&&) = default; //@ support moving
+    A& operator=(A&&) = default;
+    A(const A&) = default; //@ support copying
+    A& operator=(const A&) = default;
+};
+````
+
+事实上不需要思考太多限制，如果需要默认操作就使用 =default，虽然麻烦一些，但可以避免许多问题。
+
+```
+class StringTable {
+public:
+    … //@ 实现插入、删除、查找等函数
+private:
+    std::map<int, std::string> values;
+};
+```
+
+上面的类没有声明任何特殊成员函数，编译器将在需要时自动合成。假设过了一段时间后，想扩充一些行为，比如记录构造和析构日志。
+
+```
+class StringTable {
+public:
+    StringTable() { makeLogEntry("Creating StringTable object"); }
+    ~StringTable() { makeLogEntry("Destroying StringTable object"); }
+    …
+private:
+    std::map<int, std::string> values;
+};
+```
+
+这时析构函数就会阻止生成移动操作，但针对移动操作的测试可以通过编译，因为在不可移动时会使用拷贝操作，而这很难被察觉。执行移动的代码实际变成了拷贝，而这一切只是源于添加了一个析构函数。避免这个问题也不是难事，只需要一开始把拷贝和移动操作声明为 =default。
+
+另外还有默认构造函数和析构函数的生成未被提及，统一总结：
+
+- 默认构造函数：和 C++98 相同，只在类中不存在用户声明的构造函数时生成。
+- 析构函数：
+  - 和 C++98 基本相同，唯一的区别是默认为 noexcept。
+  - 和 C++98 相同，只有基类的析构函数为虚函数，派生类的析构函数才为虚函数。
+- 拷贝构造函数：
+  - 仅当类中不存在用户声明的拷贝构造函数时生成。
+  - 如果声明了移动操作，则拷贝构造函数被删除。
+  - 如果声明了拷贝赋值运算符或析构函数，仍能生成拷贝构造函数，但这是被废弃的行为。
+- 拷贝赋值运算符：
+  - 仅当类中不存在用户声明的拷贝赋值运算符时生成。
+  - 如果声明了移动操作，则拷贝赋值运算符被删除。
+  - 如果声明了拷贝构造函数或析构函数，仍能生成拷贝赋值运算符，但这是被废弃的行为。
+- 移动操作：仅当类中不存在任何用户声明的拷贝操作、移动操作、析构函数时生成。
+
+注意，这些机制中提到的是成员函数而非成员函数模板，模板并不会影响特殊成员函数的合成。
+
+```
+class A {
+public:
+    template<typename T>
+    A(const T& rhs); //@ 从任意类型构造
+    template<typename T>
+    A& operator=(const T& rhs); //@ 从任意类型赋值
+    …
+};
+```
+
+上述模板不会阻止编译器生成拷贝和移动操作，即使模板的实例化和拷贝操作签名相同（即 T 是 A）。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
