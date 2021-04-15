@@ -116,7 +116,7 @@ while (ft.wait_for(100ms) != std::future_status::ready)
 
 如果选用了 std::launch::async 启动策略，f 和调用 std::async  的线程并发执行，则没有问题。但如果 f 被推迟执行，则 wait_for 总会返回 std::future_status::deferred，于是循环永远不会终止。
 
-这类 bug 在开发和单元测试时很容易被忽略，只有在运行负载很重时才会被发现。解决方法很简单，检查返回的[std::future](https://en.cppreference.com/w/cpp/thread/future)，确定任务是否被推迟。但没有直接检查是否推迟的方法，替代的手法是，先调用一个 timeout-based 函数，比如 [wait_for](https://en.cppreference.com/w/cpp/thread/future/wait_for)，这并不表示想等待任何事，而只是为了查看返回值是否为 [std::future_status::deferred](https://en.cppreference.com/w/cpp/thread/future_status)。
+这类 bug 在开发和单元测试时很容易被忽略，只有在运行负载很重时才会被发现。解决方法很简单，检查返回的 std::future，确定任务是否被推迟。但没有直接检查是否推迟的方法，替代的手法是，先调用一个 timeout-based 函数，比如 wait_for，这并不表示想等待任何事，而只是为了查看返回值是否为 std::future_status::deferred。
 
 ```
 auto ft = std::async(f);
@@ -134,20 +134,20 @@ else //@ 任务未被推迟
 }
 ```
 
-综上，[std::async](https://en.cppreference.com/w/cpp/thread/async) 使用默认启动策略创建要满足以下所有条件：
+综上，std::async 使用默认启动策略创建要满足以下所有条件：
 
-- 任务不需要与对返回值调用 [get](https://en.cppreference.com/w/cpp/thread/future/get) 或 [wait](https://en.cppreference.com/w/cpp/thread/future/wait) 的线程并发执行
+- 任务不需要与对返回值调用 get 或 wait 的线程并发执行
 - 读写哪个线程的 thread_local 变量没有影响
-- 要么保证对返回值调用 [get](https://en.cppreference.com/w/cpp/thread/future/get) 或 [wait](https://en.cppreference.com/w/cpp/thread/future/wait)，要么接受任务可能永远不执行
-- 使用 [wait_for](https://en.cppreference.com/w/cpp/thread/future/wait_for) 或 [wait_until](https://en.cppreference.com/w/cpp/thread/future/wait_until) 的代码要考虑任务被推迟的可能
+- 要么保证对返回值调用 get 或 wait，要么接受任务可能永远不执行
+- 使用 wait_for 或 wait_until 的代码要考虑任务被推迟的可能
 
-只要一点不满足，就可能意味着想确保异步执行任务，这只需要指定启动策略为 [std::launch::async](https://en.cppreference.com/w/cpp/thread/launch)。
+只要一点不满足，就可能意味着想确保异步执行任务，这只需要指定启动策略为 std::launch::async。
 
 ```
 auto ft = std::async(std::launch::async, f); //@ 异步执行f
 ```
 
-默认使用 [std::launch::async](https://en.cppreference.com/w/cpp/thread/launch) 启动策略的 [std::async](https://en.cppreference.com/w/cpp/thread/async) 将会是一个很方便的工具，实现如下：
+默认使用 std::launch::async启动策略的 std::async 将会是一个很方便的工具，实现如下：
 
 ```
 template<typename F, typename... Ts>
@@ -161,11 +161,443 @@ reallyAsync(F&& f, Ts&&... args)
 }
 ```
 
-这个函数的用法和 [std::async](https://en.cppreference.com/w/cpp/thread/async) 一样：
+这个函数的用法和 std::async 一样：
 
 ```
 auto ft = reallyAsync(f); //@ 异步运行f，如果std::async抛出异常则reallyAsync也抛出异常
 ```
+
+# RAII线程管理
+
+每个 std::thread 对象都处于可合并（joinable）或不可合并（unjoinable）的状态。一个可合并的 std::thread  对应于一个底层异步运行的线程，若底层线程处于阻塞、等待调度或已运行结束的状态，则此 std::thread 可合并，否则不可合并。不可合并的 std::thread 包括：
+
+- 默认构造的 std::thread：此时没有要运行的函数，因此没有对应的底层运行线程
+- 已移动的 std::thread：移动操作导致底层线程被转用于另一个 std::thread
+- 已  join 或已  join 的 std::thread
+
+如果可合并的 std::thread 对象的析构函数被调用，则程序的执行将终止：
+
+```
+void f() {}
+
+void g()
+{
+    std::thread t(f); //@ t.joinable() == true
+}
+
+int main()
+{
+    g(); //@ g运行结束时析构t，导致整个程序终止
+    ...
+}
+```
+
+析构可合并的 std::thread 时，隐式 join 或隐式 detach 的带来问题更大。隐式 join 导致 g 运行结束时仍要保持等待 f 运行结束，这就会导致性能问题，且调试时难以追踪原因。隐式 detach 导致的调试问题更为致命：
+
+```
+void f(int&) {}
+
+void g()
+{
+    int i = 1;
+    std::thread t(f, i);
+} //@ 如果隐式detach，局部变量i被销毁，但f仍在使用局部变量的引用
+```
+
+完美销毁一个可合并的 std::thread 十分困难，因此规定销毁将导致终止程序。要避免程序终止，只要让可合并的线程在销毁时变为不可合并状态即可，使用 RAII 手法就能实现这点。
+
+```
+class A {
+public:
+    enum class DtorAction { join, detach };
+    A(std::thread&& t, DtorAction a) : action(a), t(std::move(t)) {}
+    ~A()
+    {
+        if (t.joinable())
+        {
+            if (action == DtorAction::join) t.join();
+            else t.detach();
+        }
+    }
+    A(A&&) = default;
+    A& operator=(A&&) = default;
+    std::thread& get() { return t; }
+private:
+    DtorAction action;
+    std::thread t;
+};
+void f() {}
+
+void g()
+{
+    A t(std::thread(f), A::DtorAction::join); //@ 析构前使用join
+}
+
+int main()
+{
+    g(); //@ g运行结束时将内部的std::thread置为join，变为不可合并状态
+    //@ 析构不可合并的std::thread不会导致程序终止
+    //@ 这种手法带来了隐式join和隐式detach的问题，但可以调试
+    ...
+}
+```
+
+# std::future 的析构行为
+
+可合并的 std::thread 对应一个底层系统线程，采用 std::launch::async 启动策略的 std::async 返回的 std::future 和系统线程也有类似的关系，因此可以认为 std::thread 和 std::future 相当于系统线程的 handle。
+
+销毁 std::future 有时表现为隐式 join，有时表现为隐式 detach，有时表现为既不隐式 join 也不隐式 detach，但它不会导致程序终止。这种不同表现行为是值得需要思考的。想象 std::future 处于信道的一端，callee 将 std::promise 对象传给 caller，caller 用一个 std::future 来读取结果：
+
+```
+std::promise<int> ps;
+std::future<int> ft = ps.get_future();
+```
+
+![](./img/promise_future.png)
+
+callee 的结果存储在哪？caller 调用 [get](https://en.cppreference.com/w/cpp/thread/future/get) 之前，callee 可能已经执行完毕，因此结果不可能存储在 callee 的 std::promise 对象中。但结果也不可能存储在 caller 的 std::future 中，因为 std::future 可以用来创建 std::shared_future：
+
+```
+std::shared_future<int> sf(std::move(ft));
+//@ 更简洁的写法是用std::future::share返回std::shared_future
+auto sf = ft.share();
+```
+
+而 std::shared_future 在原始的 std::future 析构后仍然可以复制：
+
+```
+auto sf2 = sf;
+auto sf3 = sf;
+```
+
+因此结果只能存储在外部某个位置，这个位置称为 shared state：
+
+![](./img/shared_state.png)
+
+shared state 通常用堆上的对象表示，但类型、接口和具体实现由标准库作者决定。shared state 决定了 std::future 的析构函数行为：
+
+- 采用 std::launch::async 启动策略的 std::async 返回的 std::future  中，最后一个引用 shared state 的，析构函数会保持阻塞至任务执行完成。本质上，这样一个  std::future 的析构函数是对异步运行的底层线程执行了一次隐式  join。
+- 其他所有 std::future  的析构函数只是简单地析构对象。对底层异步运行的任务，这相当于对线程执行了一次隐式 detach。对于被推迟的任务来说，如果这是最后一个 std::future，就意味着被推迟的任务将不会再运行。
+
+这些规则看似复杂，但本质就是一个正常行为和一个特殊行为。正常行为是析构函数会销毁 std::future 对象，它不 join 或 detach 任何东西，也没有运行任何东西，它只是销毁 std::future 的成员变量。不过实际上它确实多做了一件事，就是减少了一次 shared state 中的引用计数，shared state 由 caller 的  std::future 和 callee 的 std::promise 共同操控。引用计数让库得知何时能销毁 shared state。
+
+std::future 的析构函数只在满足以下所有条件时发生特殊行为（阻塞至异步运行的任务结束）：
+
+- std::future 引用的 shared state 由调用 std::async 创建
+- 任务的启动策略是 std::launch::async，这可以是运行时系统选择的或显式指定的
+- 这个 std::future  是最后一个引用 shared state 的。对于 std::shared_future，如果其他 std::shared_future 和要被销毁的  std::shared_future 引用同一个 shared state，则被销毁的 std::shared_future 遵循正常行为（即简单地销毁数据成员）。
+
+阻塞至异步运行的任务结束的特殊行为，在效果上相当于对运行着 std::async 创建的任务的线程执行了一次隐式 join。特别制定这个规则的原因是，标准委员会想避免隐式 detach 相关的问题，但又不想对可合并的线程一样直接让程序终止，于是妥协的结果就是执行一次隐式 join。
+
+std::future 没有提供 API 来判断 shared state 是否产生于 std::async 的调用，即无法得知析构时是否会阻塞至异步任务执行结束，因此含有 std::future 的类型都可能在析构函数中阻塞。
+
+```
+std::vector<std::future<void>> v; //@ 该容器可能在析构函数中阻塞
+
+class A { //@ 该类型对象可能会在析构函数中阻塞
+    std::shared_future<int> ft;
+};
+```
+
+只有在 std::async 调用时出现的 shared state 才可能出现特殊行为，但还有其他创建 shared state，也就是说其他创建方式生成的 std::future 将可以正常析构。
+
+```
+int f() { return  1; }
+std::packaged_task<int()> pt(f);
+auto ft = pt.get_future(); //@ ft可以正常析构
+std::thread t(std::move(pt)); //@ 创建一个线程来执行任务
+int res = ft.get();
+```
+
+析构行为正常的原因很简单：
+
+```
+{
+    std::packaged_task<int()> pt(f);
+    auto ft = pt.get_future(); //@ ft可以正常析构
+    std::thread t(std::move(pt));
+    ... //@ t.join() 或 t.detach() 或无操作
+} //@ 如果t不join不detach，则此处t的析构程序终止
+//@ 如果t已经join了，则ft析构时就无需阻塞
+//@ 如果t已经detach了，则ft析构时就无需detach
+//@ 因此std::packaged_task生成的ft一定可以正常析构
+```
+
+# 用 std::promise 和 std::future 之间的通信实现一次性通知
+
+让一个任务通知另一个异步任务发生了特定事件，一种实现方法是使用条件变量：
+
+```
+std::condition_variable cv;
+std::mutex m;
+bool flag(false);
+std::string s("hello");
+
+void f()
+{
+    std::unique_lock<std::mutex> l(m);
+    cv.wait(l, [] { return flag; }); //@ lambda返回false则阻塞，并在收到通知后重新检测
+    std::cout << s; //@ 若返回true则继续执行
+}
+
+int main()
+{
+    std::thread t(f);
+    {
+        std::lock_guard<std::mutex> l(m);
+        s += " world";
+        flag = true;
+        cv.notify_one(); //@ 发出通知
+    }
+    t.join();
+}
+```
+
+另一种方法是用 std::promise::set_value 通知 std::future::wait：
+
+```
+std::promise<void> p;
+
+void f()
+{
+    p.get_future().wait(); //@ 阻塞至p.set_value
+    std::cout << 1;
+}
+
+int main()
+{
+    std::thread t(f);
+    p.set_value(); //@ 解除阻塞
+    t.join();
+}
+```
+
+这种方法非常简单，但也有缺点，std::promise 和 std::future 之间的 shared state 是动态分配的，存在堆上的分配和回收成本。更重要的是，std::promise 只能设置一次，因此它和 std::future 的之间的通信只能使用一次，而条件变量可以重复通知。因此这种方法一般用来创建暂停状态的 std::thread：
+
+```
+std::promise<void> p;
+
+void f()
+{
+    std::cout << 1;
+}
+
+int main()
+{
+    std::thread t([] { p.get_future().wait(); f(); });
+    p.set_value();
+    t.join();
+}
+```
+
+此时可能会想到使用 RAII 版的 std::thread，但这并不安全：
+
+```
+int main()
+{
+    A t(
+        std::thread([] { p.get_future().wait(); f(); }),
+        A::DtorAction::join
+    );
+    ... //@ 如果此处抛异常，则set_value不会被调用，wait将永远不返回
+    //@ 而RAII会在析构时调用join，join将一直等待线程完成，但wait使线程永不完成
+    //@ 因此如果此处抛出异常，析构函数永远不会完成，程序将失去效应
+    p.set_value();
+}
+```
+
+std::condition_variable::notify_all 可以一次通知多个任务，这也可以通过 std::promise 和 std::shared_future 之间的通信实现：
+
+```
+std::promise<void> p;
+
+void f(int x)
+{
+    std::cout << x;
+}
+
+int main()
+{
+    std::vector<std::thread> v;
+    auto sf = p.get_future().share();
+    for(int i = 0; i < 10; ++i) v.emplace_back([sf, i] { sf.wait(); f(i); });
+    p.set_value();
+    for(auto& x : v) x.join();
+}
+```
+
+# std::atomic 提供原子操作，volatile 禁止优化内存
+
+C++ 的 volatile 变量和并发没有任何关系。
+
+std::atomic 是原子类型，提供了原子操作：
+
+```
+std::atomic<int> i(0);
+
+void f()
+{
+    ++i; //@ 原子自增
+    ++i; //@ 原子自增
+}
+
+void g()
+{
+    std::cout << i;
+}
+
+int main()
+{
+    std::thread t1(f);
+    std::thread t2(g); //@ 结果只能是0或1或2
+    t1.join();
+    t2.join();
+}
+```
+
+volatile 变量是普通的非原子类型，则不保证原子操作：
+
+```
+volatile int i(0);
+
+void f()
+{
+    ++i; //@ 读改写操作，非原子操作
+    ++i; //@ 读改写操作，非原子操作
+}
+
+void g()
+{
+    std::cout << i;
+}
+
+int main()
+{
+    std::thread t1(f);
+    std::thread t2(g); //@ 存在数据竞争，值未定义
+    t1.join();
+    t2.join();
+}
+```
+
+编译器或底层硬件对于不相关的赋值会重新排序以提高代码运行速度，std::atomic 可以限制重排序以保证顺序一致性：
+
+```
+std::atomic<bool> a(false);
+int x = 0;
+
+void f()
+{
+    x = 1; //@ 一定在a赋值为true之前执行
+    a = true;
+}
+
+void g()
+{
+    if(a) std::cout << x;
+}
+
+int main()
+{
+    std::thread t1(f);
+    std::thread t2(g);
+    t1.join();
+    t2.join(); //@ 不打印，或打印1
+}
+```
+
+volatile 不会限制代码的重新排序：
+
+```
+volatile bool a(false);
+int x = 0;
+
+void f()
+{
+    x = 1; //@ 可能被重排在a赋值为true之后
+    a = true;
+}
+
+void g()
+{
+    if(a) std::cout << x;
+}
+
+int main()
+{
+    std::thread t1(f);
+    std::thread t2(g);
+    t1.join();
+    t2.join(); //@ 不打印，或打印0或1
+}
+```
+
+volatile 的用处是告诉编译器正在处理的是特殊内存，不要对此内存上的操作进行优化。所谓优化指的是，如果把一个值写到内存某个位置，值会保留在那里，直到被覆盖，因此冗余的赋值就能被消除：
+
+```
+int x = 42;
+int y = x;
+y = x; //@ 冗余的初始化
+
+//@ 优化为
+int x = 42;
+int y = x;
+```
+
+如果把一个值写到内存某个位置但从不读取，然后再次写入该位置，则第一次的写入可被消除：
+
+```
+int x;
+x = 10;
+x = 20;
+
+//@ 优化为
+int x;
+x = 20；
+```
+
+结合上述两者：
+
+```
+int x = 42;
+int y = x;
+y = x;
+x = 10;
+x = 20;
+
+//@ 优化为
+int x = 42;
+int y = x;
+x = 20;
+```
+
+原子类型的读写也是可优化的：
+
+```
+std::atomic<int> y(x.load());
+y.store(x.load());
+
+//@ 优化为
+register = x.load(); //@ 将x读入寄存器
+std::atomic<int> y(register); //@ 用寄存器值初始化y
+y.store(register); //@ 将寄存器值存入y
+```
+
+这种冗余的代码不会直接被写出来，但往往会隐含在大量代码之中。这种优化只在常规内存中合法，特殊内存则不适用。一般主存就是常规内存，特殊内存一般用于 memory-mapped I/O ，即与外部设备（如外部传感器、显示器、打印机、网络端口）通信。这个需求的原因在于，看似冗余的操作可能是有实际作用的：
+
+```
+int currentTemperature; //@ 传感器中记录当前温度的变量
+currentTemperature = 25; //@ 更新当前温度，这条语句不应该被消除
+currentTemperature = 26;
+```
+
+
+
+
+
+
+
+
 
 
 
